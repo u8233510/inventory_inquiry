@@ -1,0 +1,67 @@
+{
+  "dbo.vw_InventoryInquiry_Type189": {
+    "type_discriminator": "類型",
+    "item_no": "料號",
+    "warehouse": "倉庫",
+    "color_no": "製造批號(顏色)",
+    "salesperson": "業務姓名",
+    "grade": "等級",
+    "customer": "Final Buyer名稱",
+    "greige_type": "",
+    "inbound_date": "入庫日期",
+    "business_department": "業務部門簡稱",
+    "order_type": "訂單類別"
+  },
+  "dbo.vw_InventoryInquiry_Type2": {
+    "type_discriminator": "類型",
+    "item_no": "料號",
+    "warehouse": "倉庫",
+    "color_no": "製造批號(顏色)",
+    "salesperson": "業務姓名",
+    "grade": "等級",
+    "customer": "Final Buyer名稱",
+    "greige_type": "",
+    "inbound_date": "入庫日期",
+    "business_department": "業務部門簡稱",
+    "order_type": "訂單類別"
+  },
+  "dbo.vw_InventoryInquiry_Type3": {
+    "type_discriminator": "類型",
+    "item_no": "料號",
+    "warehouse": "倉庫",
+    "color_no": "製造批號(顏色)",
+    "salesperson": "業務姓名",
+    "grade": "等級",
+    "customer": "Final Buyer名稱",
+    "greige_type": "",
+    "inbound_date": "入庫日期",
+    "business_department": "業務部門簡稱",
+    "order_type": "訂單類別"
+  },
+  "dbo.vw_InventoryInquiry_Type4": {
+    "type_discriminator": "類型",
+    "item_no": "料號",
+    "warehouse": "倉庫",
+    "color_no": "製造批號(顏色)",
+    "salesperson": "業務姓名",
+    "grade": "等級",
+    "customer": "Final Buyer名稱",
+    "greige_type": "",
+    "inbound_date": "入庫日期",
+    "business_department": "業務部門簡稱",
+    "order_type": "訂單類別"
+  },
+  "dbo.vw_InventoryInquiry_TypeF": {
+    "type_discriminator": "類型",
+    "item_no": "料號",
+    "warehouse": "倉庫",
+    "color_no": "製造批號(顏色)",
+    "salesperson": "業務姓名",
+    "grade": "等級",
+    "customer": "Final Buyer名稱",
+    "greige_type": "",
+    "inbound_date": "入庫日期",
+    "business_department": "業務部門簡稱",
+    "order_type": "訂單類別"
+  }
+}

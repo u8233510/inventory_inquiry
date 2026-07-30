@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>庫存分析與明細查詢</title>
+    <link rel="stylesheet" href="/static/style.css?v=13.7.0">
+</head>
+<body>
+<header class="app-header">
+    <div>
+        <h1>庫存分析與明細查詢</h1>
+        <p>依採購月會報表口徑：胚紗庫齡、3年內 Top N、責任歸屬及原始明細；兩期差異暫停使用</p>
+    </div>
+    <div id="healthBadge" class="badge badge-muted">資料庫檢查中</div>
+</header>
+
+<main class="page">
+    <nav class="tabs" id="tabs">
+        <button class="tab active" data-tab="aging">1. 胚紗庫存分析</button>
+        <button class="tab" data-tab="category">2. 庫齡結構摘要</button>
+        <button class="tab tab-disabled" data-tab="comparison" type="button" disabled aria-disabled="true" title="目前未保留歷史快照，功能暫停；程式碼保留待確認作法">3. 兩期存貨差異（暫停）</button>
+        <button class="tab" data-tab="topn">4. 3年內胚布前 N 大</button>
+        <button class="tab" data-tab="responsibility">5. 前 N 大責任歸屬</button>
+        <button class="tab" data-tab="detail">6. 庫存明細查詢</button>
+    </nav>
+
+    <section id="dashboardFilterPanel" class="panel">
+        <div class="panel-title">
+            <h2>分析條件</h2>
+            <span id="dashboardSource" class="view-name">InventoryInquiry 資料來源檢查中</span>
+        </div>
+
+        <div class="filters dashboard-filters">
+            <label class="field comparison-only">
+                <span>基準快照日</span>
+                <select id="baseSnapshotDate"></select>
+            </label>
+
+            <label class="field comparison-only">
+                <span>比較快照日</span>
+                <select id="compareSnapshotDate"></select>
+            </label>
+
+            <label class="field">
+                <span>302專案否</span>
+                <select id="projectFlags"></select>
+                <small>批號第 2 碼起連續 4 碼為 1132 或 3132＝Y</small>
+            </label>
+
+            <label class="field structure-only">
+                <span>類型分類</span>
+                <select id="inventoryTypes"></select>
+            </label>
+
+            <label class="field structure-only">
+                <span>布種別</span>
+                <select id="fabricTypes"></select>
+            </label>
+
+            <label class="field elastic-field">
+                <span>彈性否</span>
+                <select id="elasticFlags"></select>
+            </label>
+
+            <label class="field topn-only">
+                <span>Top N</span>
+                <select id="topN">
+                    <option value="10">10</option>
+                    <option value="20" selected>20</option>
+                    <option value="50">50</option>
+                    <option value="100">100</option>
+                </select>
+            </label>
+        </div>
+
+        <div class="actions">
+            <button id="dashboardSearchBtn" class="btn btn-primary">查詢</button>
+            <button id="dashboardClearBtn" class="btn">清除條件</button>
+        </div>
+    </section>
+
+    <section id="aging" class="tab-page active">
+        <div class="panel">
+            <div class="panel-title">
+                <h2>胚布＋紗庫存分析</h2>
+                <span class="summary">對應 PDF 第 1～2 頁；302專案依批號第 2 碼起連續 4 碼判斷</span>
+            </div>
+            <div id="agingTable" class="table-wrap analysis-wide"></div>
+        </div>
+    </section>
+
+    <section id="category" class="tab-page">
+        <div class="panel">
+            <div class="panel-title">
+                <h2>紗／胚布庫齡結構摘要</h2>
+                <span class="summary">對應 PDF 第 3 頁</span>
+            </div>
+            <div id="categoryTable" class="table-wrap"></div>
+        </div>
+    </section>
+
+    <section id="comparison" class="tab-page" aria-hidden="true">
+        <div class="panel comparison-disabled-notice">
+            <strong>功能暫停：</strong>目前資料表只保留最新庫存，待確認歷史快照保存方式後再啟用。
+        </div>
+        <div class="panel">
+            <div class="panel-title">
+                <h2>紗－兩期存貨差異</h2>
+                <span id="comparisonSummary" class="summary"></span>
+            </div>
+            <div id="comparisonYarnTable" class="table-wrap analysis-wide"></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">
+                <h2>胚布－兩期存貨差異</h2>
+                <span class="summary">差異＝基準期－比較期</span>
+            </div>
+            <div id="comparisonGreigeTable" class="table-wrap analysis-wide"></div>
+        </div>
+    </section>
+
+    <section id="topn" class="tab-page">
+        <div class="panel">
+            <div class="panel-title">
+                <h2>3年以內胚布庫存前 N 大：平織</h2>
+                <span id="topnNote" class="summary"></span>
+            </div>
+            <div id="topnFlatTable" class="table-wrap"></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">
+                <h2>3年以內胚布庫存前 N 大：針織</h2>
+                <span class="summary">對應 PDF 第 8 頁</span>
+            </div>
+            <div id="topnKnitTable" class="table-wrap"></div>
+        </div>
+    </section>
+
+    <section id="responsibility" class="tab-page">
+        <div class="panel">
+            <div class="panel-title">
+                <h2>胚布前 N 大：平織－責任歸屬與庫齡分析</h2>
+                <span id="responsibilityNote" class="summary"></span>
+            </div>
+            <div id="responsibilityFlatTable" class="table-wrap analysis-wide"></div>
+        </div>
+        <div class="panel">
+            <div class="panel-title">
+                <h2>胚布前 N 大：針織－責任歸屬與庫齡分析</h2>
+                <span class="summary">對應 PDF 第 9～10 頁</span>
+            </div>
+            <div id="responsibilityKnitTable" class="table-wrap analysis-wide"></div>
+        </div>
+    </section>
+
+    <section id="detail" class="tab-page">
+        <div id="detailFilterPanel" class="panel collapsible-panel">
+            <div class="panel-title">
+                <div>
+                    <h2>庫存明細查詢</h2>
+                    <span id="viewName" class="view-name">尚未選擇 VIEW</span>
+                </div>
+                <button id="detailCollapseBtn"
+                        type="button"
+                        class="btn btn-small collapse-btn"
+                        aria-expanded="true">
+                    收合查詢條件
+                </button>
+            </div>
+
+            <div id="detailFilterBody" class="collapsible-body">
+                <div class="filters detail-filters">
+                    <label class="field required">
+                        <span>類型</span>
+                        <select id="inventoryType">
+                            {% for item in type_options %}
+                            <option value="{{ item.code }}">
+                                {{ item.code }}－{{ item.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                    </label>
+
+                    <label class="field">
+                        <span>胚布類型</span>
+                        <select id="greigeTypes" disabled>
+                            <option value="">全部</option>
+                            {% for item in greige_type_options %}
+                            <option value="{{ item.code }}">
+                                {{ item.code }}－{{ item.label }}
+                            </option>
+                            {% endfor %}
+                        </select>
+                        <small>只有類型 2－胚布可使用</small>
+                    </label>
+
+                    <label class="field">
+                        <span>料號</span>
+                        <select id="itemNos"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>倉庫</span>
+                        <select id="warehouses"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>色號</span>
+                        <select id="colorNos"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>業務</span>
+                        <select id="salespersons"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>業務部門</span>
+                        <select id="businessDepartments"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>等級</span>
+                        <select id="grades"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>客戶</span>
+                        <select id="customers"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>訂單類別</span>
+                        <select id="orderTypes"></select>
+                    </label>
+
+                    <label class="field">
+                        <span>入庫日期起</span>
+                        <input id="dateStart" type="date">
+                    </label>
+
+                    <label class="field">
+                        <span>入庫日期迄</span>
+                        <input id="dateEnd" type="date">
+                    </label>
+
+                    <label class="field">
+                        <span>每頁筆數</span>
+                        <select id="pageSize">
+                            <option value="50">50</option>
+                            <option value="100" selected>100</option>
+                            <option value="200">200</option>
+                            <option value="500">500</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="selection-help">
+                    所有查詢條件皆使用下拉選單；未指定時選擇「全部」。
+                </div>
+
+                <div class="actions">
+                    <button id="detailSearchBtn" class="btn btn-primary">查詢</button>
+                    <button id="detailClearBtn" class="btn">清除條件</button>
+                    <button id="exportXlsxBtn" class="btn">匯出 Excel</button>
+                    <button id="exportCsvBtn" class="btn">匯出 CSV</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="panel result-panel">
+            <div class="panel-title">
+                <div>
+                    <h2>查詢結果</h2>
+                    <div id="resultSummary" class="summary">尚未查詢</div>
+                </div>
+                <div class="pagination">
+                    <button id="prevBtn" class="btn btn-small" disabled>上一頁</button>
+                    <span id="pageLabel">第 1 頁</span>
+                    <button id="nextBtn" class="btn btn-small" disabled>下一頁</button>
+                </div>
+            </div>
+            <div id="detailTable" class="table-wrap"></div>
+        </div>
+    </section>
+
+    <div id="loading" class="loading hidden">查詢中...</div>
+    <div id="errorBox" class="error hidden"></div>
+</main>
+
+<script src="/static/app.js?v=13.7.0"></script>
+</body>
+</html>

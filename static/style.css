@@ -464,3 +464,115 @@ tbody tr:hover td {
         grid-template-columns: repeat(4, minmax(190px, 1fr));
     }
 }
+
+
+/* =========================================================
+   可輸入搜尋下拉選單
+   ========================================================= */
+.searchable-native-select {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+}
+
+.searchable-select {
+    position: relative;
+    width: 100%;
+}
+
+.searchable-select-input {
+    width: 100%;
+    padding-right: 38px;
+}
+
+.searchable-select-toggle {
+    position: absolute;
+    top: 1px;
+    right: 1px;
+    width: 36px;
+    height: calc(100% - 2px);
+    border: 0;
+    border-left: 1px solid #cbd5e1;
+    border-radius: 0 5px 5px 0;
+    background: #f8fafc;
+    color: #475569;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.searchable-select-toggle:hover:not(:disabled) {
+    background: #eef2f7;
+}
+
+.searchable-select.is-open .searchable-select-input {
+    outline: 2px solid #93c5fd;
+    border-color: #3b82f6;
+}
+
+.searchable-select-menu {
+    position: absolute;
+    z-index: 80;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 4px;
+    border: 1px solid #94a3b8;
+    border-radius: 7px;
+    background: #ffffff;
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+}
+
+.searchable-select-option {
+    display: block;
+    width: 100%;
+    border: 0;
+    border-radius: 5px;
+    padding: 8px 10px;
+    background: transparent;
+    color: #1f2937;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 14px;
+}
+
+.searchable-select-option:hover,
+.searchable-select-option.is-highlighted {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.searchable-select-option.is-all {
+    color: #475569;
+    border-bottom: 1px solid #e2e8f0;
+    border-radius: 5px 5px 0 0;
+    margin-bottom: 3px;
+}
+
+.searchable-select-status {
+    padding: 10px;
+    color: #64748b;
+    font-size: 13px;
+}
+
+.searchable-select-status.is-error {
+    color: #b91c1c;
+}
+
+.searchable-select.is-disabled .searchable-select-input,
+.searchable-select.is-disabled .searchable-select-toggle {
+    background: #e9eef3;
+    color: #94a3b8;
+    cursor: not-allowed;
+}

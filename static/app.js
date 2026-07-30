@@ -34,6 +34,319 @@ function fillSelect(select, values, includeBlank = true, blankText = "全部") {
     }
 }
 
+
+const detailSearchSelects = {};
+
+class SearchableSelect {
+    constructor(select, config = {}) {
+        this.select = select;
+        this.config = config;
+        this.dynamic = typeof config.loadOptions === "function";
+        this.localOptions = [];
+        this.remoteOptions = [];
+        this.highlightIndex = -1;
+        this.requestSerial = 0;
+        this.debounceTimer = null;
+
+        this.wrapper = document.createElement("div");
+        this.wrapper.className = "searchable-select";
+
+        this.input = document.createElement("input");
+        this.input.type = "text";
+        this.input.className = "searchable-select-input";
+        this.input.autocomplete = "off";
+        this.input.spellcheck = false;
+        this.input.placeholder = config.placeholder || "全部（可輸入搜尋）";
+        this.input.setAttribute("role", "combobox");
+        this.input.setAttribute("aria-autocomplete", "list");
+        this.input.setAttribute("aria-expanded", "false");
+
+        this.toggleButton = document.createElement("button");
+        this.toggleButton.type = "button";
+        this.toggleButton.className = "searchable-select-toggle";
+        this.toggleButton.textContent = "▾";
+        this.toggleButton.title = "顯示選項";
+        this.toggleButton.setAttribute("aria-label", "顯示選項");
+
+        this.menu = document.createElement("div");
+        this.menu.className = "searchable-select-menu hidden";
+        this.menu.setAttribute("role", "listbox");
+
+        this.wrapper.append(this.input, this.toggleButton, this.menu);
+        this.select.classList.add("searchable-native-select");
+        this.select.insertAdjacentElement("afterend", this.wrapper);
+
+        this.readLocalOptions();
+        this.syncFromSelect();
+        this.bindEvents();
+        this.syncDisabled();
+    }
+
+    readLocalOptions() {
+        this.localOptions = Array.from(this.select.options)
+            .filter(option => option.value !== "")
+            .map(option => ({
+                value: option.value,
+                label: option.textContent || option.value
+            }));
+    }
+
+    syncFromSelect() {
+        const option = this.select.selectedOptions[0];
+        this.input.value = option && option.value
+            ? (option.textContent || option.value)
+            : "";
+    }
+
+    syncDisabled() {
+        const disabled = Boolean(this.select.disabled);
+        this.input.disabled = disabled;
+        this.toggleButton.disabled = disabled;
+        this.wrapper.classList.toggle("is-disabled", disabled);
+        if (disabled) this.close();
+    }
+
+    setDisabled(disabled) {
+        this.select.disabled = disabled;
+        this.syncDisabled();
+    }
+
+    clear() {
+        this.select.value = "";
+        this.input.value = "";
+        this.highlightIndex = -1;
+        this.close();
+    }
+
+    setLocalOptions(values) {
+        fillSelect(this.select, values, true);
+        this.readLocalOptions();
+        this.clear();
+    }
+
+    getCurrentOptions() {
+        return this.dynamic ? this.remoteOptions : this.localOptions;
+    }
+
+    filterLocalOptions(keyword) {
+        const prefix = String(keyword || "").trim().toLocaleUpperCase("zh-TW");
+        if (!prefix) return this.localOptions.slice(0, 100);
+        return this.localOptions
+            .filter(item => item.label.toLocaleUpperCase("zh-TW").startsWith(prefix)
+                || item.value.toLocaleUpperCase("zh-TW").startsWith(prefix))
+            .slice(0, 100);
+    }
+
+    async refreshOptions(keyword = "") {
+        if (this.select.disabled) return;
+
+        if (!this.dynamic) {
+            this.remoteOptions = this.filterLocalOptions(keyword);
+            this.renderOptions(this.remoteOptions);
+            return;
+        }
+
+        const serial = ++this.requestSerial;
+        this.renderStatus("讀取中...");
+
+        try {
+            const values = await this.config.loadOptions(keyword);
+            if (serial !== this.requestSerial) return;
+            this.remoteOptions = (values || []).map(item => (
+                item && typeof item === "object"
+                    ? {value: String(item.value ?? ""), label: String(item.label ?? item.value ?? "")}
+                    : {value: String(item ?? ""), label: String(item ?? "")}
+            )).filter(item => item.value);
+            this.renderOptions(this.remoteOptions);
+        } catch (error) {
+            if (serial !== this.requestSerial) return;
+            this.renderStatus(error.message || "選項讀取失敗", true);
+        }
+    }
+
+    renderStatus(message, isError = false) {
+        this.menu.replaceChildren();
+        const row = document.createElement("div");
+        row.className = `searchable-select-status${isError ? " is-error" : ""}`;
+        row.textContent = message;
+        this.menu.appendChild(row);
+        this.open();
+    }
+
+    renderOptions(options) {
+        this.menu.replaceChildren();
+        this.highlightIndex = -1;
+
+        if (!options.length) {
+            this.renderStatus("沒有符合的選項");
+            return;
+        }
+
+        const all = document.createElement("button");
+        all.type = "button";
+        all.className = "searchable-select-option is-all";
+        all.dataset.value = "";
+        all.textContent = "全部";
+        all.addEventListener("mousedown", event => event.preventDefault());
+        all.addEventListener("click", () => this.choose("", ""));
+        this.menu.appendChild(all);
+
+        for (const item of options) {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "searchable-select-option";
+            button.dataset.value = item.value;
+            button.textContent = item.label;
+            button.title = item.label;
+            button.setAttribute("role", "option");
+            button.addEventListener("mousedown", event => event.preventDefault());
+            button.addEventListener("click", () => this.choose(item.value, item.label));
+            this.menu.appendChild(button);
+        }
+
+        this.open();
+    }
+
+    choose(value, label) {
+        let option = Array.from(this.select.options).find(item => item.value === value);
+        if (!option) {
+            option = document.createElement("option");
+            option.value = value;
+            option.textContent = label || value;
+            this.select.appendChild(option);
+        }
+
+        this.select.value = value;
+        this.input.value = value ? (label || option.textContent || value) : "";
+        this.select.dispatchEvent(new Event("change", {bubbles: true}));
+        this.close();
+    }
+
+    open() {
+        if (this.select.disabled) return;
+        this.menu.classList.remove("hidden");
+        this.wrapper.classList.add("is-open");
+        this.input.setAttribute("aria-expanded", "true");
+    }
+
+    close() {
+        this.menu.classList.add("hidden");
+        this.wrapper.classList.remove("is-open");
+        this.input.setAttribute("aria-expanded", "false");
+        this.highlightIndex = -1;
+    }
+
+    moveHighlight(direction) {
+        const options = Array.from(
+            this.menu.querySelectorAll(".searchable-select-option")
+        );
+        if (!options.length) return;
+
+        this.highlightIndex += direction;
+        if (this.highlightIndex < 0) this.highlightIndex = options.length - 1;
+        if (this.highlightIndex >= options.length) this.highlightIndex = 0;
+
+        options.forEach((option, index) => {
+            option.classList.toggle("is-highlighted", index === this.highlightIndex);
+        });
+        options[this.highlightIndex].scrollIntoView({block: "nearest"});
+    }
+
+    bindEvents() {
+        this.input.addEventListener("focus", () => {
+            this.refreshOptions(this.input.value);
+        });
+
+        this.input.addEventListener("input", () => {
+            // 尚未選到正式項目時，實際查詢值維持空白。
+            this.select.value = "";
+            clearTimeout(this.debounceTimer);
+            this.debounceTimer = setTimeout(
+                () => this.refreshOptions(this.input.value),
+                220
+            );
+        });
+
+        this.input.addEventListener("keydown", event => {
+            if (event.key === "ArrowDown") {
+                event.preventDefault();
+                if (this.menu.classList.contains("hidden")) {
+                    this.refreshOptions(this.input.value);
+                } else {
+                    this.moveHighlight(1);
+                }
+            } else if (event.key === "ArrowUp") {
+                event.preventDefault();
+                this.moveHighlight(-1);
+            } else if (event.key === "Enter") {
+                const highlighted = this.menu.querySelector(
+                    ".searchable-select-option.is-highlighted"
+                );
+                if (highlighted) {
+                    event.preventDefault();
+                    highlighted.click();
+                }
+            } else if (event.key === "Escape") {
+                this.close();
+            }
+        });
+
+        this.toggleButton.addEventListener("click", () => {
+            if (this.menu.classList.contains("hidden")) {
+                this.input.focus();
+                this.refreshOptions(this.input.value);
+            } else {
+                this.close();
+            }
+        });
+    }
+}
+
+function initDetailSearchableSelects() {
+    const dynamicConfig = {
+        itemNos: "item_no",
+        warehouses: "warehouse",
+        colorNos: "color_no",
+        salespersons: "salesperson",
+        businessDepartments: "business_department",
+        grades: "grade",
+        customers: "customer",
+        orderTypes: "order_type"
+    };
+
+    for (const [id, field] of Object.entries(dynamicConfig)) {
+        detailSearchSelects[id] = new SearchableSelect($(id), {
+            placeholder: "全部（可輸入搜尋）",
+            loadOptions: async keyword => {
+                const type = $("inventoryType").value;
+                const params = new URLSearchParams({
+                    type,
+                    field,
+                    keyword: String(keyword || "").trim(),
+                    limit: "100"
+                });
+                const response = await fetch(
+                    `/api/detail/option-search?${params.toString()}`,
+                    {cache: "no-store"}
+                );
+                if (!response.ok) throw new Error(await readError(response));
+                const data = await response.json();
+                return data.options || [];
+            }
+        });
+    }
+
+    detailSearchSelects.greigeTypes = new SearchableSelect($("greigeTypes"), {
+        placeholder: "全部（可輸入搜尋）"
+    });
+}
+
+function closeAllSearchableSelects(except = null) {
+    for (const instance of Object.values(detailSearchSelects)) {
+        if (instance !== except) instance.close();
+    }
+}
+
 function setLoading(active) {
     $("loading").classList.toggle("hidden", !active);
 }
@@ -293,37 +606,28 @@ async function loadDetailSchemaAndOptions() {
     clearError();
     const type = $("inventoryType").value;
     const isType2 = type === "2";
-    $("greigeTypes").disabled = !isType2;
-    if (!isType2) {
-        $("greigeTypes").value = "";
+
+    if (detailSearchSelects.greigeTypes) {
+        detailSearchSelects.greigeTypes.setDisabled(!isType2);
+        if (!isType2) detailSearchSelects.greigeTypes.clear();
+    } else {
+        $("greigeTypes").disabled = !isType2;
+        if (!isType2) $("greigeTypes").value = "";
+    }
+
+    for (const [id, instance] of Object.entries(detailSearchSelects)) {
+        if (id !== "greigeTypes") instance.clear();
     }
 
     try {
-        const schemaResponse = await fetch(`/api/detail/schema?type=${encodeURIComponent(type)}`);
+        const schemaResponse = await fetch(
+            `/api/detail/schema?type=${encodeURIComponent(type)}`,
+            {cache: "no-store"}
+        );
         if (!schemaResponse.ok) throw new Error(await readError(schemaResponse));
         const schema = await schemaResponse.json();
         $("viewName").textContent =
             `${schema.view_name}（已隱藏：${schema.hidden_columns.join("、")}）`;
-
-        const optionResponse = await fetch(`/api/detail/options?type=${encodeURIComponent(type)}`);
-        if (!optionResponse.ok) throw new Error(await readError(optionResponse));
-        const data = await optionResponse.json();
-
-        fillSelect($("itemNos"), data.options.item_no, true);
-        fillSelect($("warehouses"), data.options.warehouse, true);
-        fillSelect($("colorNos"), data.options.color_no, true);
-        fillSelect($("salespersons"), data.options.salesperson, true);
-        fillSelect($("businessDepartments"), data.options.business_department, true);
-        fillSelect($("grades"), data.options.grade, true);
-        fillSelect($("customers"), data.options.customer, true);
-        fillSelect($("orderTypes"), data.options.order_type, true);
-
-        // 胚布類型採固定中文選項；只控制啟用與否，不用資料庫值覆蓋文字。
-        if (!isType2) {
-            for (const option of $("greigeTypes").options) {
-                option.selected = false;
-            }
-        }
     } catch (error) {
         showError(error.message);
     }
@@ -381,18 +685,8 @@ function clearDetailFilters() {
     $("dateStart").value = "";
     $("dateEnd").value = "";
 
-    for (const select of [
-        $("itemNos"),
-        $("warehouses"),
-        $("colorNos"),
-        $("salespersons"),
-        $("businessDepartments"),
-        $("grades"),
-        $("customers"),
-        $("orderTypes"),
-        $("greigeTypes")
-    ]) {
-        select.value = "";
+    for (const instance of Object.values(detailSearchSelects)) {
+        instance.clear();
     }
 
     state.detailPage = 1;
@@ -478,6 +772,15 @@ function switchTab(tabName) {
         searchDashboard();
     }
 }
+
+document.addEventListener("click", event => {
+    const clickedInstance = Object.values(detailSearchSelects).find(
+        instance => instance.wrapper.contains(event.target)
+    );
+    closeAllSearchableSelects(clickedInstance || null);
+});
+
+initDetailSearchableSelects();
 
 document.querySelectorAll(".tab").forEach(button => {
     button.addEventListener("click", () => {

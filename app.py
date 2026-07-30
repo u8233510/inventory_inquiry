@@ -27,7 +27,7 @@ from db import get_connection
 BASE_DIR = Path(__file__).resolve().parent
 FIELD_MAP_PATH = BASE_DIR / "field_map.json"
 
-app = FastAPI(title="庫存分析與明細查詢", version="13.7.0")
+app = FastAPI(title="庫存分析與明細查詢", version="13.8.0")
 app.include_router(analysis_router)
 
 
@@ -94,6 +94,20 @@ DETAIL_FIELD_CANDIDATES: dict[str, list[str]] = {
     "order_type": ["訂單類別", "訂單類別代碼"],
     "greige_type": ["胚布類型", "ta_ima20"],
     "inbound_date": ["入庫日期"],
+}
+
+# 可輸入搜尋下拉選單允許查詢的欄位。
+# 前端只能傳入此白名單中的 key，實際 SQL 欄位仍由 VIEW 欄位偵測結果決定。
+DETAIL_OPTION_FIELDS = {
+    "item_no",
+    "warehouse",
+    "color_no",
+    "salesperson",
+    "business_department",
+    "grade",
+    "customer",
+    "order_type",
+    "greige_type",
 }
 
 
@@ -525,6 +539,117 @@ def detail_schema(type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...))
         "hidden_columns": sorted(HIDDEN_RESULT_COLUMNS),
         "type_label": TYPE_LABELS[type],
         "greige_type_labels": GREIGE_TYPE_LABELS,
+    }
+
+
+def escape_like_prefix(value: str) -> str:
+    """跳脫 SQL Server LIKE 萬用字元，供前綴查詢使用。"""
+
+    return (
+        value.replace("~", "~~")
+        .replace("%", "~%")
+        .replace("_", "~_")
+        .replace("[", "~[")
+    )
+
+
+@app.get("/api/detail/option-search")
+def detail_option_search(
+    type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...),
+    field: str = Query(..., min_length=1, max_length=50),
+    keyword: str = Query(default="", max_length=200),
+    limit: int = Query(default=100, ge=1, le=200),
+) -> dict[str, Any]:
+    """
+    提供明細查詢的可輸入下拉選項。
+
+    搜尋規則：
+    - 空白：顯示排序後前 N 筆。
+    - 輸入 A：顯示 A 開頭。
+    - 再輸入 AB：顯示 AB 開頭。
+    - 僅允許白名單欄位，避免使用者直接指定 SQL 欄位。
+    """
+
+    if field not in DETAIL_OPTION_FIELDS:
+        raise HTTPException(status_code=400, detail=f"不支援的選項欄位：{field}")
+    if field == "greige_type" and type != "2":
+        return {
+            "type": type,
+            "field": field,
+            "keyword": keyword,
+            "options": [],
+        }
+
+    view_name = DETAIL_VIEW_MAP[type]
+    all_columns = [item["name"] for item in get_view_columns(view_name)]
+    mapping = resolve_detail_mapping(view_name, all_columns)
+    column = mapping.get(field)
+    if not column:
+        return {
+            "type": type,
+            "field": field,
+            "keyword": keyword,
+            "options": [],
+        }
+
+    clean_keyword = keyword.strip()
+    where = [
+        f"{qident(column)} IS NOT NULL",
+        f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)}))) <> N''",
+    ]
+    params: list[Any] = []
+
+    if type in SHARED_TYPE_CODES:
+        type_col = require_field(mapping, "type_discriminator", "類型")
+        where.append(f"CONVERT(nvarchar(50), {qident(type_col)}) = ?")
+        params.append(type)
+
+    if clean_keyword:
+        where.append(
+            f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)}))) "
+            "LIKE ? ESCAPE N'~'"
+        )
+        params.append(escape_like_prefix(clean_keyword) + "%")
+
+    sql = (
+        f"SELECT DISTINCT TOP ({limit}) "
+        f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)}))) AS value "
+        f"FROM {view_name} "
+        f"WHERE {' AND '.join(where)} "
+        "ORDER BY value;"
+    )
+
+    try:
+        with get_connection() as conn:
+            rows = conn.cursor().execute(sql, *params).fetchall()
+    except pyodbc.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"讀取搜尋選項失敗：{exc}",
+        ) from exc
+
+    values = [
+        str(row.value).strip()
+        for row in rows
+        if row.value is not None and str(row.value).strip()
+    ]
+
+    if field == "greige_type":
+        options = [
+            {
+                "value": value,
+                "label": f"{value}－{GREIGE_TYPE_LABELS.get(value, value)}",
+            }
+            for value in values
+        ]
+    else:
+        options = [{"value": value, "label": value} for value in values]
+
+    return {
+        "type": type,
+        "field": field,
+        "keyword": clean_keyword,
+        "options": options,
     }
 
 

@@ -1,0 +1,24 @@
+{
+  "version": "1.1",
+  "description": "CIMQ001 查詢規則設定檔。修改此檔即可調整固定排除條件與 302 專案特殊批號。",
+  "detail_query": {
+    "description": "頁籤 6「庫存明細查詢」使用的固定排除規則；同時影響畫面查詢、筆數、下拉選項、Excel 與 CSV 匯出。",
+    "exclude": {
+      "warehouse": {
+        "enabled": true,
+        "values": [
+          "D35",
+          "D350"
+        ],
+        "description": "固定排除倉庫 D35。營運中心選全部、指定營運中心、類型選全部或指定類型時皆適用。"
+      }
+    },
+    "project_302_overrides": {
+      "enabled": true,
+      "force_y_batch_numbers": [
+        "A3101-24050061"
+      ],
+      "description": "無固定判斷公式但確認屬於 302 專案的「批號(訂單/請購單)」特例；畫面查詢、302專案篩選、Excel 與 CSV 匯出皆視為 Y。"
+    }
+  }
+}

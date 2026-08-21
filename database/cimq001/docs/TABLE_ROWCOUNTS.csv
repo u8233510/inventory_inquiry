@@ -1,0 +1,5 @@
+﻿"TableName","RecordCount"
+"[dbo].[InventoryInquiryActivity]","380824"
+"[dbo].[InventoryInquiryActivityLoadState]","4"
+"[dbo].[InventoryInquirySnapshot]","72018"
+"[dbo].[InventoryInquirySnapshot_Work]","72018"

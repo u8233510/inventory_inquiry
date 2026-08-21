@@ -5,6 +5,7 @@ import io
 import json
 import os
 import re
+import zipfile
 from datetime import date, datetime
 from decimal import Decimal
 from functools import lru_cache
@@ -13,10 +14,11 @@ from typing import Any, Literal
 
 import pyodbc
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from openpyxl import Workbook
+from openpyxl.cell import WriteOnlyCell
 from openpyxl.styles import Font, PatternFill
 from openpyxl.utils import get_column_letter
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,8 +28,9 @@ from db import get_connection
 
 BASE_DIR = Path(__file__).resolve().parent
 FIELD_MAP_PATH = BASE_DIR / "field_map.json"
+QUERY_RULES_PATH = BASE_DIR / "query_rules.json"
 
-app = FastAPI(title="庫存分析與明細查詢", version="13.8.0")
+app = FastAPI(title="庫存分析與明細查詢", version="14.9.0")
 app.include_router(analysis_router)
 
 
@@ -45,24 +48,31 @@ templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # 庫存明細查詢沿用 v12，不改動資料來源、篩選、分頁與匯出邏輯。
 DETAIL_VIEW_MAP: dict[str, str] = {
+    # ALL 直接查目前正式共用 BASE VIEW；各指定類型仍查個別 Type VIEW。
+    "ALL": "dbo.vw_InventoryInquiry_Base",
     "1": "dbo.vw_InventoryInquiry_Type189",
     "2": "dbo.vw_InventoryInquiry_Type2",
     "3": "dbo.vw_InventoryInquiry_Type3",
     "4": "dbo.vw_InventoryInquiry_Type4",
     "8": "dbo.vw_InventoryInquiry_Type189",
     "9": "dbo.vw_InventoryInquiry_Type189",
+    "D": "dbo.vw_InventoryInquiry_TypeD",
+    "E": "dbo.vw_InventoryInquiry_TypeE",
     "F": "dbo.vw_InventoryInquiry_TypeF",
 }
 
 SHARED_TYPE_CODES = {"1", "8", "9"}
 
 TYPE_LABELS: dict[str, str] = {
+    "ALL": "全部",
     "1": "布",
     "2": "胚布",
     "3": "紗",
     "4": "盤頭紗",
     "8": "成衣",
     "9": "領片",
+    "D": "代工",
+    "E": "膜",
     "F": "軍工／其他",
 }
 
@@ -80,20 +90,27 @@ HIDDEN_RESULT_COLUMNS = {
     "計算基準日",
     "庫存鍵",
     "InventoryKey",
+    "SKU",
 }
 
 DETAIL_FIELD_CANDIDATES: dict[str, list[str]] = {
+    "operating_center": ["營運中心", "OperatingCenter"],
     "type_discriminator": ["類型"],
     "item_no": ["料號"],
     "warehouse": ["倉庫"],
-    "color_no": ["製造批號(顏色)"],
+    "color_no": ["興采色號"],
+    "zero_project": ["零元專案否"],
+    "project_302": ["302專案否", "302專案", "Project302Flag"],
+    "project_batch_no": ["批號(訂單/請購單)", "imgs04"],
     "salesperson": ["業務姓名", "業務"],
     "grade": ["等級"],
+    "reason_code": ["理由碼"],
     "customer": ["Final Buyer名稱", "Final Buyer ID"],
     "business_department": ["業務部門簡稱", "業務部門"],
     "order_type": ["訂單類別", "訂單類別代碼"],
     "greige_type": ["胚布類型", "ta_ima20"],
-    "inbound_date": ["入庫日期"],
+    # 保留 API 欄位名稱 inbound_date，實際對應 4GL 使用的庫存異動日期。
+    "inbound_date": ["異動日期"],
 }
 
 # 可輸入搜尋下拉選單允許查詢的欄位。
@@ -102,9 +119,11 @@ DETAIL_OPTION_FIELDS = {
     "item_no",
     "warehouse",
     "color_no",
+    "zero_project",
     "salesperson",
     "business_department",
     "grade",
+    "reason_code",
     "customer",
     "order_type",
     "greige_type",
@@ -114,13 +133,17 @@ DETAIL_OPTION_FIELDS = {
 class DetailSearchRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
-    inventory_type: Literal["1", "2", "3", "4", "8", "9", "F"] = Field(alias="type")
+    inventory_type: Literal["ALL", "1", "2", "3", "4", "8", "9", "D", "E", "F"] = Field(alias="type")
+    operating_centers: list[str] = Field(default_factory=list)
     item_nos: list[str] = Field(default_factory=list)
     warehouses: list[str] = Field(default_factory=list)
     color_nos: list[str] = Field(default_factory=list)
+    zero_projects: list[str] = Field(default_factory=list)
+    project_302_flags: list[str] = Field(default_factory=list)
     salespersons: list[str] = Field(default_factory=list)
     business_departments: list[str] = Field(default_factory=list)
     grades: list[str] = Field(default_factory=list)
+    reason_codes: list[str] = Field(default_factory=list)
     customers: list[str] = Field(default_factory=list)
     order_types: list[str] = Field(default_factory=list)
     greige_types: list[str] = Field(default_factory=list)
@@ -151,6 +174,219 @@ def load_field_overrides() -> dict[str, dict[str, str]]:
     if not isinstance(data, dict):
         raise RuntimeError("field_map.json 格式錯誤。")
     return data
+
+
+
+def load_query_rules() -> dict[str, Any]:
+    """
+    讀取查詢規則設定檔。
+
+    不使用快取，讓 query_rules.json 修改後可直接於下一次查詢生效，
+    不需要為了調整排除清單而修改 Python 程式。
+    """
+    if not QUERY_RULES_PATH.exists():
+        return {}
+
+    try:
+        with QUERY_RULES_PATH.open("r", encoding="utf-8") as fp:
+            data = json.load(fp)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"query_rules.json 讀取失敗：{exc}",
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=500,
+            detail="query_rules.json 格式錯誤：根節點必須是 JSON object。",
+        )
+    return data
+
+
+def get_detail_excluded_values(field: str) -> list[str]:
+    """
+    取得庫存明細查詢固定排除值。
+
+    設定位置：
+    detail_query.exclude.<field>
+    """
+    rules = load_query_rules()
+    detail_query = rules.get("detail_query", {})
+    exclude = detail_query.get("exclude", {})
+
+    if not isinstance(detail_query, dict) or not isinstance(exclude, dict):
+        return []
+
+    rule = exclude.get(field, {})
+    if not isinstance(rule, dict):
+        return []
+
+    if rule.get("enabled", True) is False:
+        return []
+
+    values = rule.get("values", [])
+    if not isinstance(values, list):
+        return []
+
+    result: list[str] = []
+    for value in values:
+        clean = str(value).strip()
+        if clean:
+            result.append(clean)
+
+    return result
+
+
+
+def get_project_302_force_y_batch_numbers() -> list[str]:
+    """
+    取得 query_rules.json 中，沒有固定公式但必須視為 302 專案的批號。
+    """
+    rules = load_query_rules()
+    detail_query = rules.get("detail_query", {})
+    overrides = detail_query.get("project_302_overrides", {})
+
+    if not isinstance(detail_query, dict) or not isinstance(overrides, dict):
+        return []
+
+    if overrides.get("enabled", True) is False:
+        return []
+
+    values = overrides.get("force_y_batch_numbers", [])
+    if not isinstance(values, list):
+        return []
+
+    return [
+        str(value).strip()
+        for value in values
+        if str(value).strip()
+    ]
+
+
+def sql_nvarchar_literal(value: str) -> str:
+    return "N'" + str(value).replace("'", "''") + "'"
+
+
+def project_302_effective_expression(
+    mapping: dict[str, str | None],
+) -> str | None:
+    """
+    有效 302 專案判斷：
+    1. query_rules.json 特例批號 -> Y
+    2. 其他 -> 使用資料來源原本的 302 專案值
+    """
+    project_col = mapping.get("project_302")
+    if not project_col:
+        return None
+
+    raw_expression = (
+        f"UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20), "
+        f"{qident(project_col)}))))"
+    )
+
+    batch_numbers = get_project_302_force_y_batch_numbers()
+    batch_col = mapping.get("project_batch_no")
+
+    if not batch_numbers or not batch_col:
+        return raw_expression
+
+    batch_expression = (
+        f"UPPER(LTRIM(RTRIM(CONVERT(nvarchar(200), "
+        f"{qident(batch_col)}))))"
+    )
+    literals = ", ".join(
+        sql_nvarchar_literal(value.upper())
+        for value in batch_numbers
+    )
+
+    return (
+        "CASE "
+        f"WHEN {batch_expression} IN ({literals}) THEN N'Y' "
+        f"ELSE {raw_expression} "
+        "END"
+    )
+
+
+def add_project_302_filter(
+    where: list[str],
+    params: list[Any],
+    mapping: dict[str, str | None],
+    values: list[str],
+) -> None:
+    """
+    使用「含 Config 特例」後的有效 302 專案值篩選。
+    """
+    clean = [
+        str(value).strip().upper()
+        for value in values
+        if str(value).strip()
+    ]
+    if not clean:
+        return
+
+    expression = project_302_effective_expression(mapping)
+    if not expression:
+        raise HTTPException(
+            status_code=400,
+            detail="目前資料來源沒有「302專案」欄位。",
+        )
+
+    placeholders = ", ".join("?" for _ in clean)
+    where.append(f"{expression} IN ({placeholders})")
+    params.extend(clean)
+
+
+def build_detail_select_list(
+    visible_columns: list[str],
+    mapping: dict[str, str | None],
+) -> str:
+    """
+    查詢結果中的 302 專案欄位，也套用 Config 特例，
+    使畫面 / Excel / CSV 顯示一致。
+    """
+    project_col = mapping.get("project_302")
+    project_expression = project_302_effective_expression(mapping)
+
+    parts: list[str] = []
+    for column in visible_columns:
+        if (
+            project_col
+            and project_expression
+            and column == project_col
+        ):
+            parts.append(
+                f"{project_expression} AS {qident(column)}"
+            )
+        else:
+            parts.append(qident(column))
+
+    return ", ".join(parts)
+
+
+def add_config_exclusion_filters(
+    where: list[str],
+    params: list[Any],
+    mapping: dict[str, str | None],
+) -> None:
+    """
+    套用 query_rules.json 的庫存明細固定排除規則。
+
+    目前先支援 warehouse；未來可在此集中擴充其他欄位。
+    """
+    warehouse_values = get_detail_excluded_values("warehouse")
+    if warehouse_values:
+        warehouse_col = mapping.get("warehouse")
+        if warehouse_col:
+            placeholders = ", ".join("?" for _ in warehouse_values)
+            expression = (
+                f"UPPER(LTRIM(RTRIM(CONVERT(nvarchar(4000), "
+                f"{qident(warehouse_col)}))))"
+            )
+            where.append(
+                f"{expression} NOT IN ({placeholders})"
+            )
+            params.extend(value.upper() for value in warehouse_values)
 
 
 def normalize(value: str) -> str:
@@ -229,6 +465,41 @@ def visible_metadata(view_name: str) -> list[dict[str, Any]]:
         if item["name"] not in HIDDEN_RESULT_COLUMNS
     ]
 
+    # 營運中心固定顯示為查詢結果第一欄。
+    # 新版 VIEW 若已提供 [營運中心] / [OperatingCenter] 就直接使用；
+    # 舊版 VIEW 尚未提供時，由 detail_source_sql() 從
+    # InventoryInquirySnapshot_Work 補出 [營運中心]。
+    operating_center_column = detect_column(
+        [item["name"] for item in metadata],
+        ["營運中心", "OperatingCenter"],
+    )
+    if operating_center_column:
+        center_item = next(
+            item for item in metadata
+            if item["name"] == operating_center_column
+        )
+    else:
+        center_item = {
+            "ordinal": 0,
+            "name": "營運中心",
+            "data_type": "nvarchar",
+            "max_length": 40,
+            "precision": 0,
+            "scale": 0,
+            "nullable": True,
+            "object_type": "SYNTHETIC",
+        }
+
+    center_item["label"] = "營運中心"
+    metadata = [
+        center_item,
+        *[
+            item for item in metadata
+            if item["name"] != operating_center_column
+            and item["name"] != "營運中心"
+        ],
+    ]
+
     # 明細欄位依使用者指定位置重新排列；未指定欄位維持 VIEW 原順序。
     # 不同 Type View 若缺少個別欄位，會直接略過，不影響其他欄位。
     item_after_activity_date = ["料號"]
@@ -276,6 +547,83 @@ def visible_metadata(view_name: str) -> list[dict[str, Any]]:
     return ordered
 
 
+def detail_source_sql(view_name: str) -> tuple[str, list[str]]:
+    """
+    回傳明細查詢實際 FROM 來源與可用欄位。
+
+    個別 Type VIEW / 統一 VIEW 的欄位並不完全一致。
+    若目前資料來源缺少下列欄位，利用 InventoryInquirySnapshot_Work.InventoryKey
+    補出查詢所需的固定欄位，不必逐支修改既有 VIEW：
+
+    - [營運中心]  <- Work.OperatingCenter
+    - [302專案否] <- Work.Project302Flag
+
+    這樣「類型=全部」使用 dbo.vw_InventoryInquiry_Base 時，
+    302 專案 Y/N 條件仍可正常查詢。
+    """
+
+    view_columns = [item["name"] for item in get_view_columns(view_name)]
+
+    operating_center_column = detect_column(
+        view_columns,
+        ["營運中心", "OperatingCenter"],
+    )
+    project_302_column = detect_column(
+        view_columns,
+        ["302專案否", "302專案", "Project302Flag"],
+    )
+
+    need_operating_center = operating_center_column is None
+    need_project_302 = project_302_column is None
+
+    # VIEW 本身欄位完整時，不增加 JOIN。
+    if not need_operating_center and not need_project_302:
+        return view_name, view_columns
+
+    if "庫存識別碼" not in view_columns:
+        missing_labels = []
+        if need_operating_center:
+            missing_labels.append("營運中心")
+        if need_project_302:
+            missing_labels.append("302專案否")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"{view_name} 缺少「庫存識別碼」，"
+                f"無法從 InventoryInquirySnapshot_Work 補出："
+                + "、".join(missing_labels)
+            ),
+        )
+
+    synthetic_selects: list[str] = []
+    synthetic_columns: list[str] = []
+
+    if need_operating_center:
+        synthetic_selects.append(
+            "LTRIM(RTRIM(CONVERT(nvarchar(20), w.OperatingCenter))) "
+            "AS [營運中心]"
+        )
+        synthetic_columns.append("營運中心")
+
+    if need_project_302:
+        synthetic_selects.append(
+            "LTRIM(RTRIM(CONVERT(nvarchar(10), w.Project302Flag))) "
+            "AS [302專案否]"
+        )
+        synthetic_columns.append("302專案否")
+
+    source_sql = (
+        "(SELECT v.*, "
+        + ", ".join(synthetic_selects)
+        + f" FROM {view_name} AS v "
+        "INNER JOIN dbo.InventoryInquirySnapshot_Work AS w "
+        "ON w.InventoryKey = "
+        "TRY_CONVERT(varbinary(32), v.[庫存識別碼], 2)) AS detail_source"
+    )
+
+    return source_sql, [*view_columns, *synthetic_columns]
+
+
 def resolve_detail_mapping(view_name: str, columns: list[str]) -> dict[str, str | None]:
     overrides = load_field_overrides().get(view_name, {})
     mapping: dict[str, str | None] = {}
@@ -310,6 +658,25 @@ def serialize_value(value: Any) -> Any:
         return value.isoformat(sep=" ")
     if isinstance(value, date):
         return value.isoformat()
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
+
+
+
+def excel_cell_value(value: Any) -> Any:
+    """
+    Excel 匯出專用型別轉換。
+
+    重點：
+    - Decimal / int / float 保持數值型別，Excel 才能加總、排序、公式運算。
+    - date / datetime 保持日期型別。
+    - 只有 bytes 轉成十六進位文字。
+    - 原本就是字串的料號、單號、項次代碼等仍保持文字，
+      不會因為「看起來像數字」就被強制轉成數字。
+    """
+    if value is None:
+        return None
     if isinstance(value, bytes):
         return value.hex()
     return value
@@ -357,14 +724,24 @@ def add_multi_filter(
     column: str | None,
     values: list[str],
     label: str,
+    *,
+    binary_compare: bool = False,
 ) -> None:
     clean = [str(v).strip() for v in values if str(v).strip()]
     if not clean:
         return
     if not column:
         raise HTTPException(status_code=400, detail=f"目前資料來源沒有「{label}」欄位。")
+
     placeholders = ", ".join("?" for _ in clean)
-    where.append(f"CONVERT(nvarchar(4000), {qident(column)}) IN ({placeholders})")
+    expression = (
+        f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)})))"
+    )
+
+    if binary_compare:
+        expression += " COLLATE Latin1_General_100_BIN2"
+
+    where.append(f"{expression} IN ({placeholders})")
     params.extend(clean)
 
 
@@ -386,6 +763,17 @@ def build_detail_filter_sql(
     where: list[str] = ["1 = 1"]
     params: list[Any] = []
 
+    # 先套用固定排除規則，再套用使用者查詢條件。
+    add_config_exclusion_filters(where, params, mapping)
+
+    add_multi_filter(
+        where,
+        params,
+        mapping.get("operating_center"),
+        req.operating_centers,
+        "營運中心",
+    )
+
     if req.inventory_type in SHARED_TYPE_CODES:
         type_col = require_field(mapping, "type_discriminator", "類型")
         where.append(f"CONVERT(nvarchar(50), {qident(type_col)}) = ?")
@@ -393,7 +781,27 @@ def build_detail_filter_sql(
 
     add_multi_filter(where, params, mapping.get("item_no"), req.item_nos, "料號")
     add_multi_filter(where, params, mapping.get("warehouse"), req.warehouses, "倉庫")
-    add_multi_filter(where, params, mapping.get("color_no"), req.color_nos, "色號")
+    add_multi_filter(
+        where,
+        params,
+        mapping.get("color_no"),
+        req.color_nos,
+        "興采色號",
+        binary_compare=True,
+    )
+    add_multi_filter(
+        where,
+        params,
+        mapping.get("zero_project"),
+        req.zero_projects,
+        "零元專案否",
+    )
+    add_project_302_filter(
+        where,
+        params,
+        mapping,
+        req.project_302_flags,
+    )
     add_multi_filter(where, params, mapping.get("salesperson"), req.salespersons, "業務")
     add_multi_filter(
         where,
@@ -403,6 +811,13 @@ def build_detail_filter_sql(
         "業務部門",
     )
     add_multi_filter(where, params, mapping.get("grade"), req.grades, "等級")
+    add_multi_filter(
+        where,
+        params,
+        mapping.get("reason_code"),
+        req.reason_codes,
+        "理由碼",
+    )
     add_multi_filter(where, params, mapping.get("customer"), req.customers, "客戶")
     add_multi_filter(
         where,
@@ -422,7 +837,7 @@ def build_detail_filter_sql(
         )
 
     if req.inbound_date_start or req.inbound_date_end:
-        inbound_col = require_field(mapping, "inbound_date", "入庫日期")
+        inbound_col = require_field(mapping, "inbound_date", "異動日期")
         if req.inbound_date_start:
             where.append(f"{qident(inbound_col)} >= CAST(? AS date)")
             params.append(req.inbound_date_start.isoformat())
@@ -437,9 +852,9 @@ def fetch_detail_rows(req: DetailSearchRequest, *, export: bool = False) -> dict
     validate_paging(req)
 
     view_name = DETAIL_VIEW_MAP[req.inventory_type]
+    source_sql, all_columns = detail_source_sql(view_name)
     metadata = visible_metadata(view_name)
     visible_columns = [item["name"] for item in metadata]
-    all_columns = [item["name"] for item in get_view_columns(view_name)]
     mapping = resolve_detail_mapping(view_name, all_columns)
     where_sql, params = build_detail_filter_sql(req, mapping)
 
@@ -451,13 +866,13 @@ def fetch_detail_rows(req: DetailSearchRequest, *, export: bool = False) -> dict
         default_sort = visible_columns[0]
     sort_field = req.sort_field or default_sort
 
-    select_list = ", ".join(qident(col) for col in visible_columns)
+    select_list = build_detail_select_list(visible_columns, mapping)
 
     if export:
         max_export_rows = int(os.getenv("MAX_EXPORT_ROWS", "100000"))
         sql = (
             f"SELECT TOP ({max_export_rows}) {select_list} "
-            f"FROM {view_name} "
+            f"FROM {source_sql} "
             f"WHERE {where_sql} "
             f"ORDER BY {qident(sort_field)} {req.sort_direction};"
         )
@@ -466,14 +881,14 @@ def fetch_detail_rows(req: DetailSearchRequest, *, export: bool = False) -> dict
         offset = (req.page - 1) * req.page_size
         sql = (
             f"SELECT {select_list} "
-            f"FROM {view_name} "
+            f"FROM {source_sql} "
             f"WHERE {where_sql} "
             f"ORDER BY {qident(sort_field)} {req.sort_direction} "
             f"OFFSET ? ROWS FETCH NEXT ? ROWS ONLY;"
         )
         query_params = [*params, offset, req.page_size]
 
-    count_sql = f"SELECT COUNT_BIG(*) FROM {view_name} WHERE {where_sql};"
+    count_sql = f"SELECT COUNT_BIG(*) FROM {source_sql} WHERE {where_sql};"
 
     try:
         with get_connection() as conn:
@@ -519,16 +934,19 @@ def health() -> dict[str, Any]:
     try:
         with get_connection() as conn:
             value = conn.cursor().execute("SELECT 1;").fetchval()
-        return {"ok": value == 1}
+        return {
+            "ok": value == 1,
+            "app_version": app.version,
+        }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @app.get("/api/detail/schema")
-def detail_schema(type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...)) -> dict[str, Any]:
+def detail_schema(type: Literal["ALL", "1", "2", "3", "4", "8", "9", "D", "E", "F"] = Query(...)) -> dict[str, Any]:
     view_name = DETAIL_VIEW_MAP[type]
+    _, all_columns = detail_source_sql(view_name)
     metadata = visible_metadata(view_name)
-    all_columns = [item["name"] for item in get_view_columns(view_name)]
     mapping = resolve_detail_mapping(view_name, all_columns)
     return {
         "type": type,
@@ -555,9 +973,10 @@ def escape_like_prefix(value: str) -> str:
 
 @app.get("/api/detail/option-search")
 def detail_option_search(
-    type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...),
+    type: Literal["ALL", "1", "2", "3", "4", "8", "9", "D", "E", "F"] = Query(...),
     field: str = Query(..., min_length=1, max_length=50),
     keyword: str = Query(default="", max_length=200),
+    operating_center: str = Query(default="", max_length=20),
     limit: int = Query(default=100, ge=1, le=200),
 ) -> dict[str, Any]:
     """
@@ -581,7 +1000,7 @@ def detail_option_search(
         }
 
     view_name = DETAIL_VIEW_MAP[type]
-    all_columns = [item["name"] for item in get_view_columns(view_name)]
+    source_sql, all_columns = detail_source_sql(view_name)
     mapping = resolve_detail_mapping(view_name, all_columns)
     column = mapping.get(field)
     if not column:
@@ -593,11 +1012,35 @@ def detail_option_search(
         }
 
     clean_keyword = keyword.strip()
+    clean_operating_center = operating_center.strip().upper()
+    if clean_operating_center not in {"", "SNX", "GFUN", "M302"}:
+        raise HTTPException(status_code=400, detail="不支援的營運中心。")
+
+    option_expression = (
+        f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)})))"
+    )
+    if field == "color_no":
+        option_expression += " COLLATE Latin1_General_100_BIN2"
+
     where = [
         f"{qident(column)} IS NOT NULL",
-        f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)}))) <> N''",
+        f"{option_expression} <> N''",
     ]
     params: list[Any] = []
+
+    # 下拉選項亦依固定排除規則產生，避免 D35 專屬值出現在選項中。
+    add_config_exclusion_filters(where, params, mapping)
+
+    if clean_operating_center:
+        operating_center_col = require_field(
+            mapping,
+            "operating_center",
+            "營運中心",
+        )
+        where.append(
+            f"LTRIM(RTRIM(CONVERT(nvarchar(50), {qident(operating_center_col)}))) = ?"
+        )
+        params.append(clean_operating_center)
 
     if type in SHARED_TYPE_CODES:
         type_col = require_field(mapping, "type_discriminator", "類型")
@@ -605,18 +1048,15 @@ def detail_option_search(
         params.append(type)
 
     if clean_keyword:
-        where.append(
-            f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)}))) "
-            "LIKE ? ESCAPE N'~'"
-        )
+        where.append(f"{option_expression} LIKE ? ESCAPE N'~'")
         params.append(escape_like_prefix(clean_keyword) + "%")
 
     sql = (
         f"SELECT DISTINCT TOP ({limit}) "
-        f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)}))) AS value "
-        f"FROM {view_name} "
+        f"{option_expression} AS [OptionValue] "
+        f"FROM {source_sql} "
         f"WHERE {' AND '.join(where)} "
-        "ORDER BY value;"
+        f"ORDER BY {option_expression};"
     )
 
     try:
@@ -629,9 +1069,9 @@ def detail_option_search(
         ) from exc
 
     values = [
-        str(row.value).strip()
+        str(row[0]).strip()
         for row in rows
-        if row.value is not None and str(row.value).strip()
+        if row[0] is not None and str(row[0]).strip()
     ]
 
     if field == "greige_type":
@@ -639,6 +1079,15 @@ def detail_option_search(
             {
                 "value": value,
                 "label": f"{value}－{GREIGE_TYPE_LABELS.get(value, value)}",
+            }
+            for value in values
+        ]
+    elif field == "zero_project":
+        zero_labels = {"Y": "Y－是", "N": "N－否"}
+        options = [
+            {
+                "value": value,
+                "label": zero_labels.get(value.upper(), value),
             }
             for value in values
         ]
@@ -654,9 +1103,9 @@ def detail_option_search(
 
 
 @app.get("/api/detail/options")
-def detail_options(type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...)) -> dict[str, Any]:
+def detail_options(type: Literal["ALL", "1", "2", "3", "4", "8", "9", "D", "E", "F"] = Query(...)) -> dict[str, Any]:
     view_name = DETAIL_VIEW_MAP[type]
-    all_columns = [item["name"] for item in get_view_columns(view_name)]
+    source_sql, all_columns = detail_source_sql(view_name)
     mapping = resolve_detail_mapping(view_name, all_columns)
     option_limit = int(os.getenv("OPTION_LIMIT", "500"))
 
@@ -665,9 +1114,11 @@ def detail_options(type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...)
         "item_no",
         "warehouse",
         "color_no",
+        "zero_project",
         "salesperson",
         "business_department",
         "grade",
+        "reason_code",
         "customer",
         "order_type",
         "greige_type",
@@ -682,24 +1133,34 @@ def detail_options(type: Literal["1", "2", "3", "4", "8", "9", "F"] = Query(...)
 
         where = [f"{qident(column)} IS NOT NULL"]
         params: list[Any] = []
+
+        # 舊版 options API 亦套用固定排除規則。
+        add_config_exclusion_filters(where, params, mapping)
+
         if type in SHARED_TYPE_CODES:
             type_col = require_field(mapping, "type_discriminator", "類型")
             where.append(f"CONVERT(nvarchar(50), {qident(type_col)}) = ?")
             params.append(type)
 
+        legacy_expression = (
+            f"LTRIM(RTRIM(CONVERT(nvarchar(4000), {qident(column)})))"
+        )
+        if key == "color_no":
+            legacy_expression += " COLLATE Latin1_General_100_BIN2"
+
         sql = (
             f"SELECT DISTINCT TOP ({option_limit}) "
-            f"CONVERT(nvarchar(4000), {qident(column)}) AS value "
-            f"FROM {view_name} "
+            f"{legacy_expression} AS [OptionValue] "
+            f"FROM {source_sql} "
             f"WHERE {' AND '.join(where)} "
-            f"ORDER BY value;"
+            f"ORDER BY {legacy_expression};"
         )
         with get_connection() as conn:
             rows = conn.cursor().execute(sql, *params).fetchall()
         result[key] = [
-            str(row.value).strip()
+            str(row[0]).strip()
             for row in rows
-            if row.value is not None and str(row.value).strip()
+            if row[0] is not None and str(row[0]).strip()
         ]
 
     return {
@@ -717,14 +1178,20 @@ def detail_search(req: DetailSearchRequest) -> dict[str, Any]:
 
 def workbook_response(
     title: str,
-    columns: list[str],
+    columns: list[dict[str, Any]],
     rows: list[dict[str, Any]],
     filename: str,
 ) -> StreamingResponse:
     wb = Workbook()
     ws = wb.active
     ws.title = title[:31]
-    ws.append(columns)
+
+    column_names = [str(item["name"]) for item in columns]
+    column_labels = [
+        str(item.get("label") or item["name"])
+        for item in columns
+    ]
+    ws.append(column_labels)
 
     header_fill = PatternFill("solid", fgColor="D9EAF7")
     for cell in ws[1]:
@@ -732,13 +1199,16 @@ def workbook_response(
         cell.fill = header_fill
 
     for row in rows:
-        ws.append([row.get(col) for col in columns])
+        ws.append([row.get(col) for col in column_names])
 
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = ws.dimensions
 
-    for index, name in enumerate(columns, start=1):
-        sample_lengths = [len(str(name))]
+    for index, (name, label) in enumerate(
+        zip(column_names, column_labels),
+        start=1,
+    ):
+        sample_lengths = [len(str(label))]
         for row in rows[:200]:
             value = row.get(name)
             if value is not None:
@@ -758,24 +1228,235 @@ def workbook_response(
     )
 
 
+def fast_detail_xlsx_response(
+    req: DetailSearchRequest,
+) -> Response:
+    """
+    大量明細 Excel 快速匯出（Excel 相容版）。
+
+    原則：
+    - SQL 不先 COUNT_BIG。
+    - SQL 分批 fetchmany，不 fetchall。
+    - openpyxl write_only 降低記憶體使用量。
+    - 未指定欄位排序時不做 ORDER BY。
+    - 不在 write_only 完成後追加 AutoFilter / 欄寬等可能造成
+      舊版 Excel 相容性問題的工作表結構。
+    - 產出後先驗證 OOXML ZIP 結構，再以一般 Response 一次回傳，
+      避免 XLSX 以 chunked StreamingResponse 傳輸時被環境干擾。
+    """
+
+    validate_paging(req)
+
+    view_name = DETAIL_VIEW_MAP[req.inventory_type]
+    source_sql, all_columns = detail_source_sql(view_name)
+    metadata = visible_metadata(view_name)
+    visible_columns = [item["name"] for item in metadata]
+    mapping = resolve_detail_mapping(view_name, all_columns)
+    where_sql, params = build_detail_filter_sql(req, mapping)
+
+    if req.sort_field and req.sort_field not in visible_columns:
+        raise HTTPException(
+            status_code=400,
+            detail="排序欄位不屬於目前顯示欄位。",
+        )
+
+    max_export_rows = int(os.getenv("MAX_EXPORT_ROWS", "100000"))
+    select_list = build_detail_select_list(visible_columns, mapping)
+
+    order_sql = ""
+    if req.sort_field:
+        order_sql = (
+            f" ORDER BY {qident(req.sort_field)} {req.sort_direction}"
+        )
+
+    sql = (
+        f"SELECT TOP ({max_export_rows}) {select_list} "
+        f"FROM {source_sql} "
+        f"WHERE {where_sql}"
+        f"{order_sql};"
+    )
+
+    wb = Workbook(write_only=True)
+    ws = wb.create_sheet(title="庫存明細")
+
+    # write_only 模式下，需要在第一列資料寫入前設定凍結窗格。
+    ws.freeze_panes = "A2"
+
+    column_labels = [
+        str(item.get("label") or item["name"])
+        for item in metadata
+    ]
+
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    header_row = []
+    for label in column_labels:
+        cell = WriteOnlyCell(ws, value=label)
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+        header_row.append(cell)
+    ws.append(header_row)
+
+    type_column = mapping.get("type_discriminator")
+    greige_type_column = mapping.get("greige_type")
+
+    type_index = (
+        visible_columns.index(type_column)
+        if type_column in visible_columns
+        else None
+    )
+    greige_type_index = (
+        visible_columns.index(greige_type_column)
+        if greige_type_column in visible_columns
+        else None
+    )
+
+    fetch_size = max(
+        500,
+        int(os.getenv("EXPORT_FETCH_SIZE", "2000")),
+    )
+
+    exported_rows = 0
+
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.arraysize = fetch_size
+            cursor.execute(sql, *params)
+
+            while True:
+                batch = cursor.fetchmany(fetch_size)
+                if not batch:
+                    break
+
+                for db_row in batch:
+                    values = [
+                        excel_cell_value(value)
+                        for value in db_row
+                    ]
+
+                    if (
+                        type_index is not None
+                        and values[type_index] is not None
+                    ):
+                        raw_type = values[type_index]
+                        type_code = str(raw_type).strip().upper()
+                        values[type_index] = TYPE_LABELS.get(
+                            type_code,
+                            raw_type,
+                        )
+
+                    if (
+                        greige_type_index is not None
+                        and values[greige_type_index] is not None
+                    ):
+                        raw_greige = values[greige_type_index]
+                        greige_code = str(raw_greige).strip()
+                        values[greige_type_index] = (
+                            GREIGE_TYPE_LABELS.get(
+                                greige_code,
+                                raw_greige,
+                            )
+                        )
+
+                    ws.append(values)
+                    exported_rows += 1
+
+                    if exported_rows >= max_export_rows:
+                        break
+
+                if exported_rows >= max_export_rows:
+                    break
+
+    except pyodbc.Error as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"SQL Server 匯出失敗：{exc}",
+        ) from exc
+
+    output = io.BytesIO()
+    wb.save(output)
+    content = output.getvalue()
+
+    # XLSX 必須是合法 OOXML ZIP；送出前先做最基本完整性檢查。
+    if not content.startswith(b"PK"):
+        raise HTTPException(
+            status_code=500,
+            detail="Excel 產出失敗：檔案不是有效的 XLSX 格式。",
+        )
+
+    verify_stream = io.BytesIO(content)
+    if not zipfile.is_zipfile(verify_stream):
+        raise HTTPException(
+            status_code=500,
+            detail="Excel 產出失敗：XLSX ZIP 結構不完整。",
+        )
+
+    verify_stream.seek(0)
+    try:
+        with zipfile.ZipFile(verify_stream, "r") as zf:
+            required_parts = {
+                "[Content_Types].xml",
+                "xl/workbook.xml",
+                "xl/worksheets/sheet1.xml",
+            }
+            missing_parts = required_parts.difference(zf.namelist())
+            if missing_parts:
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Excel 產出失敗：缺少必要 XLSX 結構："
+                        + "、".join(sorted(missing_parts))
+                    ),
+                )
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Excel 產出失敗：XLSX ZIP 已損毀。",
+        ) from exc
+
+    filename = (
+        f"inventory_detail_type_{req.inventory_type}_"
+        f"{datetime.now():%Y%m%d_%H%M%S}.xlsx"
+    )
+
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="{filename}"'
+            ),
+            "X-Exported-Rows": str(exported_rows),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
 @app.post("/api/detail/export/xlsx")
-def detail_export_xlsx(req: DetailSearchRequest) -> StreamingResponse:
-    result = fetch_detail_rows(req, export=True)
-    columns = [item["name"] for item in result["columns"]]
-    filename = f"inventory_detail_type_{req.inventory_type}_{datetime.now():%Y%m%d_%H%M%S}.xlsx"
-    return workbook_response("庫存明細", columns, result["rows"], filename)
+def detail_export_xlsx(
+    req: DetailSearchRequest,
+) -> Response:
+    return fast_detail_xlsx_response(req)
 
 
 @app.post("/api/detail/export/csv")
 def detail_export_csv(req: DetailSearchRequest) -> StreamingResponse:
     result = fetch_detail_rows(req, export=True)
-    columns = [item["name"] for item in result["columns"]]
+    columns = result["columns"]
+    column_names = [str(item["name"]) for item in columns]
+    column_labels = [
+        str(item.get("label") or item["name"])
+        for item in columns
+    ]
 
     text = io.StringIO(newline="")
-    writer = csv.DictWriter(text, fieldnames=columns, extrasaction="ignore")
-    writer.writeheader()
+    writer = csv.writer(text)
+    writer.writerow(column_labels)
     for row in result["rows"]:
-        writer.writerow(row)
+        writer.writerow([row.get(name) for name in column_names])
 
     content = ("\ufeff" + text.getvalue()).encode("utf-8")
     filename = f"inventory_detail_type_{req.inventory_type}_{datetime.now():%Y%m%d_%H%M%S}.csv"

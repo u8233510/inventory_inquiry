@@ -1,0 +1,60 @@
+﻿"JobName","JobEnabled","StepId","StepName","DatabaseName","Subsystem","Command"
+"Sync_ime_file倉庫存放位置資料主檔","1","1","倉庫存放位置資料主檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_Master_Sync\sync_ime_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_ime_file倉庫存放位置資料主檔","1","2","Sync_PrdMrt_PrdImeFile","PRD_MRT","TSQL","exec Sync_PrdMrt_PrdImeFile;"
+"Sync_img_file庫存資料明細檔","1","1","庫存資料明細檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_img_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_img_file庫存資料明細檔","1","2","Sync_PrdMrt_PrdImgFile","PRD_MRT","TSQL","exec Sync_PrdMrt_PrdImgFile;"
+"Sync_imgs_file批號庫存明細檔","1","1","批號庫存明細檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_imgs_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_imgs_file批號庫存明細檔","1","2","同步更新PRDMRT_prd_imgs_file","PRD_MRT","TSQL","exec Sync_PrdMrt_PrdImgsFile;"
+"Sync_ina_file庫存異動單據單頭檔","1","1","庫存異動單據單頭檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_ina_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_inb_file庫存異動單據單身檔","1","1","庫存異動單據單身檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_inb_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_ime_file興采倉庫存放位置資料主檔","1","1","興采倉庫存放位置資料主檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_Master_Sync\sync_snx_ime_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_img_file興采庫存資料明細檔","1","1","興采庫存資料明細檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_img_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_imgs_file興采批號庫存明細檔","1","1","批號庫存明細檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_imgs_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_imgs_file興采批號庫存明細檔","1","2","Sync_PrdMrt_PrdSnxImgsFile","PRD_MRT","TSQL","exec Sync_PrdMrt_PrdSnxImgsFile;"
+"Sync_snx_imm_file興采庫存調撥單單頭檔","1","1","興采庫存調撥單單頭檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_imm_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_ina_file興采庫存異動單據單頭檔","1","1","興采庫存異動單據單頭檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_ina_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_inb_file興采庫存異動單據單身檔","1","1","興采庫存異動單據單身檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_inb_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_ogc_file興采出貨單身庫存異動明細檔","1","1","興采出貨單身庫存異動明細檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_ogc_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_ogc_file興采出貨單身庫存異動明細檔","1","2","同步更新PrdMrt_PrdSnxOgcFile","PRD_MRT","TSQL","exec Sync_PrdMrt_PrdSnxOgcFile;"
+"Sync_snx_tc_img_file興采庫存轉批單頭檔","1","1","興采庫存轉批單頭檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_tc_img_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_tc_imga_file興采庫存轉批變更檔-修改後","1","1","興采庫存轉批變更檔-修改後","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_tc_imga_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_tc_imgb_file興采庫存轉批變更檔-修改前","1","1","興采庫存轉批變更檔-修改前","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_snx_tc_imgb_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_snx_tc_imgc_file興采庫存轉批工單紀錄檔","1","1","興采庫存轉批工單紀錄檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_Master_Sync\sync_snx_tc_imgc_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_tc_img_file庫存資料明細檔","1","1","庫存資料明細檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_tc_img_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_tc_imga_file庫存轉批變更檔-修改後","1","1","庫存轉批變更檔-修改後","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_tc_imga_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_tc_imgb_file庫存轉批變更檔-修改前","1","1","庫存轉批變更檔-修改前","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_tc_imgb_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_tc_imgc_file庫存轉批工單紀錄檔","1","1","庫存轉批工單紀錄檔","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_Master_Sync\sync_tc_imgc_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_tc_qac_file測試申請單庫存製造批號紀錄","1","1","測試申請單庫存製造批號紀錄","master","SSIS","/ISSERVER ""\""\SSISDB\Singtex_SSIS\TT_gfun_sync\sync_tc_qac_file.dtsx\"""" /SERVER ""\""172.27.10.30\"""" /Par ""\""$ServerOption::LOGGING_LEVEL(Int16)\"""";1 /Par ""\""$ServerOption::SYNCHRONIZED(Boolean)\"""";True /CALLERINFO SQLAGENT /REPORTING E"
+"Sync_tc_qac_file測試申請單庫存製造批號紀錄","1","2","同步更新PRDMRT PrdTcQacFile","PRD_MRT","TSQL","exec Sync_PrdMrt_PrdTcQacFile;"
+"更新SAL_MRT_庫存相關Table","1","1","重建庫存快照","SAL_MRT","TSQL","EXEC dbo.sp_Load_InventoryInquirySnapshot_Core;"
+"更新SAL_MRT_庫存相關Table","1","2","載入庫存異動","SAL_MRT","TSQL","EXEC dbo.sp_Load_InventoryInquiryActivity;"
+"更新SAL_MRT_庫存相關Table","1","3","更新興采生管/採購","SAL_MRT","TSQL","
+EXEC dbo.sp_Update_InventoryInquiryPerson
+     
+     @AsOfDate = NULL,
+     
+     @OnlyMissing = 0,
+     
+     @MaxRows = NULL;"
+"更新SAL_MRT_庫存相關Table","1","4","更新平均成本","SAL_MRT","TSQL","EXEC dbo.sp_Update_InventoryInquiryCost;"
+"更新SAL_MRT_庫存相關Table","1","5","更新膜及代工","SAL_MRT","TSQL","EXEC dbo.sp_Refresh_InventoryInquiry_GFUN_DE;"
+"更新SAL_MRT_庫存相關Table","1","6","更新302布、胚布等...","SAL_MRT","TSQL","EXEC sp_Refresh_InventoryInquiry_M302"
+"更新SAL_MRT_庫存相關Table","1","7","更新興采零元專案","SAL_MRT","TSQL","EXEC dbo.sp_Update_InventoryInquiryZeroFlag
+    @CalculationBaseDate = NULL,
+  
+    @IncludeSNX = 1,
+    @IncludeGFUN = 0,
+    @IncludeM302 = 0;"
+"更新SAL_MRT_庫存相關Table","1","8","更新聚紡零元專案","SAL_MRT","TSQL","EXEC dbo.sp_Update_InventoryInquiryZeroFlag
+    @CalculationBaseDate = NULL,
+    @IncludeSNX = 0,
+    @IncludeGFUN = 1,
+    @IncludeM302 = 0;"
+"更新SAL_MRT_庫存相關Table","1","9","更新302零元專案","SAL_MRT","TSQL","EXEC dbo.sp_Update_InventoryInquiryZeroFlag
+    @CalculationBaseDate = NULL,
+    @IncludeSNX = 0,
+    @IncludeGFUN = 0,
+    
+    @IncludeM302 = 1;"
+"更新SAL_MRT_庫存相關Table","1","10","更新302專案","SAL_MRT","TSQL","EXEC dbo.sp_Update_InventoryInquiry302Flag"
+"更新SAL_MRT_庫存相關Table","1","11","複製到工作區","SAL_MRT","TSQL","EXEC dbo.sp_Copy_InventoryInquirySnapshot_ToWork"

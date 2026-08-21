@@ -1,0 +1,5 @@
+﻿"ProcessName","BackfillBeforeDate","OracleMinDate","BackfillComplete","LastSourceRows","LastInsertedRows","LastSuccessfulAt"
+"InventoryInquiryActivity_TLFS","2020/12/1 上午 12:00:00","2020/12/1 上午 12:00:00","True","25584","8651","2026/8/21 下午 12:59:33"
+"InventoryInquiryActivity_TLFS_M302","2025/11/1 上午 12:00:00","2023/2/24 上午 12:00:00","False","2727","1874","2026/8/21 下午 01:32:16"
+"InventoryInquiryActivity_TLFS_Work","2020/12/1 上午 12:00:00","2020/12/1 上午 12:00:00","True","28000","7417","2026/8/3 下午 06:04:38"
+"InventoryInquiryActivity_TLFS111_GFUN_DE","2023/1/1 上午 12:00:00","2023/1/6 上午 12:00:00","True","10412","1645","2026/8/21 下午 01:31:14"

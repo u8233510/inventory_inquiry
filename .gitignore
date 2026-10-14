@@ -1,2 +1,7 @@
 .env 
 __pycache__ 
+analysis.py_*
+static/app_bak*.js
+static/app_error.js
+templates/index_bak*.html
+templates/index_error.html

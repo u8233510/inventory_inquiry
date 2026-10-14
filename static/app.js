@@ -10,6 +10,95 @@ function selectedValues(select) {
 const value = select.value;
 return value ? [value] : [];
 }
+function topAgeSubrangeValues() {
+const container = $("topAgeSubrange");
+if (!container) return ["all"];
+const checked = Array.from(container.querySelectorAll('input[type="checkbox"]:checked'))
+.map(input => input.value)
+.filter(Boolean);
+return checked.length ? checked : ["all"];
+}
+function updateTopAgeSubrangeSummary() {
+const container = $("topAgeSubrange");
+const text = $("topAgeSubrangeText");
+if (!container || !text) return;
+const inputs = Array.from(container.querySelectorAll('input[type="checkbox"]'));
+const allInput = inputs.find(item => item.value === "all");
+if (allInput && allInput.checked) {
+text.textContent = "全部（0～365天）";
+text.title = "全部（0～365天）";
+return;
+}
+const labels = inputs
+.filter(item => item.value !== "all" && item.checked)
+.map(item => item.closest("label")?.querySelector("span")?.textContent?.trim() || item.value);
+const fullText = labels.join("、") || "全部（0～365天）";
+text.textContent = labels.length <= 2 ? fullText : `已選 ${labels.length} 個區間`;
+text.title = fullText;
+}
+function setTopAgeSubrangeMenuOpen(open) {
+const trigger = $("topAgeSubrangeTrigger");
+const menu = $("topAgeSubrangeMenu");
+if (!trigger || !menu) return;
+menu.classList.toggle("hidden", !open);
+trigger.classList.toggle("open", open);
+trigger.setAttribute("aria-expanded", open ? "true" : "false");
+}
+function resetTopAgeSubranges() {
+const container = $("topAgeSubrange");
+if (!container) return;
+container.querySelectorAll('input[type="checkbox"]').forEach(input => {
+input.checked = input.value === "all";
+});
+updateTopAgeSubrangeSummary();
+setTopAgeSubrangeMenuOpen(false);
+}
+function initTopAgeSubrangeMultiSelect() {
+const container = $("topAgeSubrange");
+const trigger = $("topAgeSubrangeTrigger");
+const menu = $("topAgeSubrangeMenu");
+if (!container || !trigger || !menu) return;
+const inputs = Array.from(container.querySelectorAll('input[type="checkbox"]'));
+trigger.addEventListener("click", event => {
+event.stopPropagation();
+setTopAgeSubrangeMenuOpen(menu.classList.contains("hidden"));
+});
+menu.addEventListener("click", event => event.stopPropagation());
+for (const input of inputs) {
+input.addEventListener("change", () => {
+const allInput = inputs.find(item => item.value === "all");
+if (input.value === "all" && input.checked) {
+inputs.forEach(item => { if (item !== input) item.checked = false; });
+} else {
+if (input.value !== "all" && input.checked && allInput) allInput.checked = false;
+const selectedBuckets = inputs.filter(item => item.value !== "all" && item.checked);
+if (selectedBuckets.length === 0 && allInput) allInput.checked = true;
+}
+updateTopAgeSubrangeSummary();
+});
+}
+document.addEventListener("click", event => {
+if (!container.contains(event.target)) setTopAgeSubrangeMenuOpen(false);
+});
+document.addEventListener("keydown", event => {
+if (event.key === "Escape") setTopAgeSubrangeMenuOpen(false);
+});
+updateTopAgeSubrangeSummary();
+}
+function searchableSelectedValues(id) {
+const instance = detailSearchSelects[id];
+if (!instance) return selectedValues($(id));
+const selected = String(instance.select.value || "").trim();
+if (selected) return [selected];
+// Dynamic searchable filters must also accept text typed directly by the user.
+// Previously the input event cleared the hidden native <select>, so pressing
+// 查詢 without clicking a dropdown option silently removed the filter.
+if (instance.dynamic) {
+const typed = String(instance.input.value || "").trim();
+return typed ? [typed] : [];
+}
+return [];
+}
 function fillSelect(select, values, includeBlank = true, blankText = "全部") {
 select.replaceChildren();
 if (includeBlank) {
@@ -403,7 +492,11 @@ inventory_types: selectedValues($("inventoryTypes")),
 fabric_types: selectedValues($("fabricTypes")),
 elastic_flags: selectedValues($("elasticFlags")),
 project_flags: selectedValues($("projectFlags")),
-top_n: Number($("topN").value)
+top_n: $("topN").value === "all" ? null : Number($("topN").value),
+top_type: $("topType") ? ($("topType").value || "2") : "2",
+top_age_from: $("topAgeFrom") && $("topAgeFrom").value !== "" ? Number($("topAgeFrom").value) : 0,
+top_age_to: $("topAgeTo") && $("topAgeTo").value !== "" ? Number($("topAgeTo").value) : null,
+top_age_subrange: topAgeSubrangeValues()
 };
 }
 async function postJson(url, payload) {
@@ -455,6 +548,17 @@ if (projectField) {
 projectField.classList.toggle("hidden", available.project_302 === false);
 }
 }
+function updateTopAgeSubrangeVisibility() {
+const field = document.querySelector(".age-subrange-field");
+if (!field) return;
+const isTopN = state.activeTab === "topn" || state.activeTab === "responsibility";
+const fromValue = $("topAgeFrom") ? $("topAgeFrom").value : "";
+const toValue = $("topAgeTo") ? $("topAgeTo").value : "";
+const show = isTopN && fromValue === "0" && toValue === "1";
+field.classList.toggle("hidden", !show);
+if (!show) setTopAgeSubrangeMenuOpen(false);
+}
+
 function updateDashboardFilterVisibility() {
 const isComparison = state.activeTab === "comparison";
 const isTopN = state.activeTab === "topn" || state.activeTab === "responsibility";
@@ -465,9 +569,13 @@ node => node.classList.toggle("hidden", !isComparison)
 document.querySelectorAll(".topn-only").forEach(
 node => node.classList.toggle("hidden", !isTopN)
 );
+document.querySelectorAll(".topn-page-only").forEach(
+node => node.classList.toggle("hidden", state.activeTab !== "topn")
+);
 document.querySelectorAll(".structure-only").forEach(
 node => node.classList.toggle("hidden", !isStructure)
 );
+updateTopAgeSubrangeVisibility();
 $("dashboardFilterPanel").classList.toggle("hidden", state.activeTab === "detail");
 }
 function clearComparisonTables(message = "") {
@@ -501,9 +609,18 @@ renderTable("comparisonGreigeTable", data.knit.columns, data.knit.rows);
 const data = await postJson("/api/dashboard/top-items", payload);
 renderTable("topnFlatTable", data.flat.columns, data.flat.rows);
 renderTable("topnKnitTable", data.knit.columns, data.knit.rows);
-$("topnNote").textContent = data.received_greige_exclusion_applied
-? `CXCR002 ${data.report_period}；3年以內，已排除已收胚款資料`
-: `CXCR002 ${data.report_period}；3年以內；目前 Fact 無獨立「已收胚款」旗標，未額外排除`;
+if ($("topnFlatTitle")) {
+$("topnFlatTitle").textContent =
+`胚布${data.top_n_label === "全部" ? "全部" : `前 ${data.top_n_label || payload.top_n} 大`}：平織`;
+}
+if ($("topnKnitTitle")) {
+$("topnKnitTitle").textContent =
+`胚布${data.top_n_label === "全部" ? "全部" : `前 ${data.top_n_label || payload.top_n} 大`}：針織`;
+}
+$("topnNote").textContent =
+`CXCR002 ${data.report_period}；類型：胚布`
++ `；庫齡：${data.age_label || "0～2年"}`
++ `；平織／針織各自獨立排名`;
 } else if (state.activeTab === "responsibility") {
 const data = await postJson("/api/dashboard/responsibility", payload);
 renderTable(
@@ -516,8 +633,17 @@ renderTable(
 data.knit.columns,
 data.knit.rows
 );
+if ($("responsibilityFlatTitle")) {
+$("responsibilityFlatTitle").textContent =
+`胚布${data.top_n_label === "全部" ? "全部" : `前 ${data.top_n_label || payload.top_n} 大`}：平織－責任歸屬與庫齡分析`;
+}
+if ($("responsibilityKnitTitle")) {
+$("responsibilityKnitTitle").textContent =
+`胚布${data.top_n_label === "全部" ? "全部" : `前 ${data.top_n_label || payload.top_n} 大`}：針織－責任歸屬與庫齡分析`;
+}
 $("responsibilityNote").textContent =
-`CXCR002 ${data.report_period}；3年以內 Top ${payload.top_n}；使用 Fact 權責歸屬欄位`;
+`CXCR002 ${data.report_period}；庫齡：${data.age_label || "0～2年"}`
++ `；Top ${data.top_n_label || data.top_n || payload.top_n || "全部"}；使用 Fact 權責歸屬欄位`;
 }
 } catch (error) {
 showError(error.message);
@@ -593,6 +719,13 @@ $("inventoryTypes"), $("fabricTypes"), $("elasticFlags"), $("projectFlags")
 select.value = "";
 }
 $("topN").value = "20";
+if ($("topType")) $("topType").value = "2";
+if ($("topAgeFrom")) $("topAgeFrom").value = "0";
+if ($("topAgeTo")) $("topAgeTo").value = "2";
+resetTopAgeSubranges();
+updateTopAgeSubrangeVisibility();
+if ($("topnFlatTitle")) $("topnFlatTitle").textContent = "胚布前 N 大：平織";
+if ($("topnKnitTitle")) $("topnKnitTitle").textContent = "胚布前 N 大：針織";
 }
 async function loadDetailSchemaAndOptions() {
 clearError();
@@ -649,17 +782,17 @@ function detailPayload() {
 return {
 type: $("inventoryType").value,
 operating_centers: selectedValues($("operatingCenters")),
-item_nos: selectedValues($("itemNos")),
-warehouses: selectedValues($("warehouses")),
-color_nos: selectedValues($("colorNos")),
-zero_projects: selectedValues($("zeroProjects")),
+item_nos: searchableSelectedValues("itemNos"),
+warehouses: searchableSelectedValues("warehouses"),
+color_nos: searchableSelectedValues("colorNos"),
+zero_projects: searchableSelectedValues("zeroProjects"),
 project_302_flags: selectedValues($("project302Flags")),
-salespersons: selectedValues($("salespersons")),
-business_departments: selectedValues($("businessDepartments")),
-grades: selectedValues($("grades")),
-reason_codes: selectedValues($("reasonCodes")),
-customers: selectedValues($("customers")),
-order_types: selectedValues($("orderTypes")),
+salespersons: searchableSelectedValues("salespersons"),
+business_departments: searchableSelectedValues("businessDepartments"),
+grades: searchableSelectedValues("grades"),
+reason_codes: searchableSelectedValues("reasonCodes"),
+customers: searchableSelectedValues("customers"),
+order_types: searchableSelectedValues("orderTypes"),
 greige_types: $("inventoryType").value === "2"
 ? selectedValues($("greigeTypes"))
 : [],
@@ -836,6 +969,9 @@ if (!button.disabled) switchTab(button.dataset.tab);
 $("dashboardSearchBtn").addEventListener("click", searchDashboard);
 $("dashboardClearBtn").addEventListener("click", clearDashboardFilters);
 $("dashboardExportXlsxBtn").addEventListener("click", exportDashboardXlsx);
+if ($("topAgeFrom")) $("topAgeFrom").addEventListener("change", updateTopAgeSubrangeVisibility);
+if ($("topAgeTo")) $("topAgeTo").addEventListener("change", updateTopAgeSubrangeVisibility);
+initTopAgeSubrangeMultiSelect();
 $("operatingCenters").addEventListener("change", () => {
 for (const [id, instance] of Object.entries(detailSearchSelects)) {
 if (id !== "greigeTypes" && id !== "project302Flags") {

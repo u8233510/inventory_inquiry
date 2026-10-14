@@ -6,7 +6,7 @@ import re
 from datetime import datetime
 from urllib.parse import quote
 from collections import defaultdict
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
@@ -47,7 +47,10 @@ def _qtable(name: str) -> str:
 
 FACT = _qtable(CXCR002_TABLE)
 
-TYPE_LABELS = {"2": "胚布", "3": "紗"}
+TYPE_LABELS = {"1": "布", "2": "胚布", "3": "紗"}
+TOP_TYPE_LABELS = {"1": "布", "2": "胚布", "3": "紗"}
+# 「布」同時涵蓋 ItemTypeCode 1 / D；頁面顯示仍統一為「布」。
+TOP_TYPE_CODES = {"1": ["1", "D"], "2": ["2"], "3": ["3"]}
 FABRIC_LABELS = {"1": "針織", "2": "平織"}
 ELASTIC_LABELS = {"1": "彈性", "2": "非彈性"}
 
@@ -76,7 +79,21 @@ class DashboardRequest(BaseModel):
     fabric_types: list[str] = Field(default_factory=list)
     elastic_flags: list[str] = Field(default_factory=list)
     project_flags: list[str] = Field(default_factory=list)
-    top_n: int = 20
+    # None means「全部」; numeric values keep the existing Top-N behavior.
+    top_n: int | None = 20
+    # Page 4 Top-N dedicated filters.
+    # top_type: 1=布, 2=胚布, 3=紗
+    # top_age_to=None means no upper bound (NULL / 以上).
+    top_type: str = "2"
+    top_age_from: float | None = 0
+    top_age_to: float | None = 2
+    # Optional fine-grained buckets when From=0 and To=1.
+    # Supports multi-select: all / 0_30 / 31_90 / 91_180 / 181_365
+    # String is still accepted for backward compatibility with older front-end builds.
+    top_age_subrange: list[str] | str | None = Field(default_factory=lambda: ["all"])
+    # Backward compatibility with the immediately previous Page 4 patch.
+    top_category: str | None = None
+    top_age_range: str | None = None
 
 
 def _as_number(value: Any) -> float:
@@ -199,7 +216,9 @@ def _dashboard_where(
         selected_types = _clean_values(req.inventory_types, {"2", "3"})
         selected_types = selected_types or ["2", "3"]
     else:
-        selected_types = _clean_values(force_types, {"2", "3"})
+        # Forced report types may include finished fabric (1) for Page 4 Top-N.
+        # The regular structure pages still expose only yarn/greige via their UI.
+        selected_types = _clean_values(force_types, {"1", "2", "3", "D"})
 
     if selected_types:
         placeholders = ",".join("?" for _ in selected_types)
@@ -751,20 +770,210 @@ def period_comparison(req: DashboardRequest) -> dict[str, Any]:
     }
 
 
+def _normalize_top_type(req: DashboardRequest) -> str:
+    # Prefer the new field; retain previous top_category as fallback.
+    code = str(req.top_type or req.top_category or "2").strip().upper()
+    return code if code in TOP_TYPE_LABELS else "2"
+
+
+def _year_boundary_days(value: float | int | Decimal) -> int:
+    """Convert report-year boundary to the same day convention used by CXCR002.
+
+    Examples: 1 -> 365, 1.5 -> 548, 2 -> 730, 3 -> 1095.
+    """
+    years = Decimal(str(value))
+    return int((years * Decimal("365")).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def _top_age_filter(
+    age_from: float | None,
+    age_to: float | None,
+    age_subrange: list[str] | str | None = None,
+) -> tuple[str, list[Any], float, float | None, str]:
+    try:
+        start_year = float(0 if age_from is None else age_from)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="庫齡 From 必須是非負數。")
+
+    if start_year < 0:
+        raise HTTPException(status_code=400, detail="庫齡 From 不可小於 0。")
+
+    end_year: float | None
+    if age_to is None:
+        end_year = None
+    else:
+        try:
+            end_year = float(age_to)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="庫齡 To 必須是非負數或留空。")
+        if end_year < 0:
+            raise HTTPException(status_code=400, detail="庫齡 To 不可小於 0。")
+        if end_year <= start_year:
+            raise HTTPException(status_code=400, detail="庫齡 To 必須大於 From；若要查 From 以上，請將 To 留空。")
+
+    # Special drill-down for 0 -> 1 year. Multiple first-year buckets can be
+    # combined freely. SQL uses OR so non-contiguous selections are preserved.
+    allowed_subranges = {
+        "0_30": (0, 30, "0～30天"),
+        "31_90": (31, 90, "31～90天"),
+        "91_180": (91, 180, "91～180天"),
+        "181_365": (181, 365, "181～365天"),
+    }
+
+    if isinstance(age_subrange, (list, tuple, set)):
+        selected_subranges = [str(value or "").strip().lower() for value in age_subrange]
+    elif age_subrange is None:
+        selected_subranges = ["all"]
+    else:
+        selected_subranges = [str(age_subrange).strip().lower()]
+
+    selected_subranges = [value for value in selected_subranges if value]
+    if not selected_subranges:
+        selected_subranges = ["all"]
+
+    if start_year == 0 and end_year == 1:
+        if "all" in selected_subranges:
+            return "AgeDays BETWEEN ? AND ?", [0, 365], start_year, end_year, "0～1年（全部）"
+
+        invalid = [value for value in selected_subranges if value not in allowed_subranges]
+        if invalid:
+            raise HTTPException(status_code=400, detail="一年內區間值不正確。")
+
+        # Preserve the business bucket order regardless of click order.
+        bucket_order = ["0_30", "31_90", "91_180", "181_365"]
+        chosen = [value for value in bucket_order if value in set(selected_subranges)]
+        if not chosen:
+            return "AgeDays BETWEEN ? AND ?", [0, 365], start_year, end_year, "0～1年（全部）"
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        labels: list[str] = []
+        for key in chosen:
+            low_day, high_day, label = allowed_subranges[key]
+            clauses.append("AgeDays BETWEEN ? AND ?")
+            params.extend([low_day, high_day])
+            labels.append(label)
+
+        # If all four buckets are selected, simplify to the full first year.
+        if len(chosen) == 4:
+            return "AgeDays BETWEEN ? AND ?", [0, 365], start_year, end_year, "0～1年（全部）"
+
+        return "(" + " OR ".join(clauses) + ")", params, start_year, end_year, "、".join(labels)
+
+    # From=0 means include AgeDays=0. Any positive From is an exclusive year
+    # boundary: From=2 starts at day 731, matching the established 2~3 year band.
+    low_day = 0 if start_year == 0 else _year_boundary_days(start_year) + 1
+
+    if end_year is None:
+        age_sql = "AgeDays >= ?"
+        params = [low_day]
+        label = f"{start_year:g}年以上"
+    else:
+        high_day = _year_boundary_days(end_year)
+        age_sql = "AgeDays BETWEEN ? AND ?"
+        params = [low_day, high_day]
+        if start_year == 0:
+            label = f"0～{end_year:g}年"
+        else:
+            label = f"{start_year:g}～{end_year:g}年"
+
+    return age_sql, params, start_year, end_year, label
+
+def _format_age_span(min_days: Any, max_days: Any) -> str:
+    try:
+        low = int(min_days) if min_days is not None else None
+        high = int(max_days) if max_days is not None else None
+    except (TypeError, ValueError):
+        return ""
+    if low is None and high is None:
+        return ""
+    if low == high:
+        return f"{low}天"
+    if low is None:
+        return f"～{high}天"
+    if high is None:
+        return f"{low}天以上"
+    return f"{low}～{high}天"
+
+
+def _top_category_source(
+    req: DashboardRequest,
+    period: int,
+) -> tuple[list[dict[str, Any]], str, str, float, float | None, str]:
+    type_code = _normalize_top_type(req)
+    type_label = TOP_TYPE_LABELS[type_code]
+    force_type_codes = TOP_TYPE_CODES[type_code]
+    age_sql, age_params, age_from, age_to, age_label = _top_age_filter(
+        req.top_age_from, req.top_age_to, req.top_age_subrange
+    )
+
+    where, params = _dashboard_where(
+        req,
+        periods=[period],
+        force_types=force_type_codes,
+        three_years=False,
+        apply_structure_filters=False,
+    )
+    where.append(age_sql)
+    params.extend(age_params)
+
+    rows = _query(
+        f"""
+        SELECT
+            CONVERT(nvarchar(200), ItemNo) AS ItemNo,
+            CONVERT(nvarchar(40), InventoryUnitCode) AS InventoryUnitCode,
+            MIN(AgeDays) AS MinAgeDays,
+            MAX(AgeDays) AS MaxAgeDays,
+            MIN(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), FabricTypeCode))),N'')) AS MinFabricTypeCode,
+            MAX(NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(20), FabricTypeCode))),N'')) AS MaxFabricTypeCode,
+            SUM(ISNULL(InventoryQuantity,0)) AS Quantity,
+            SUM(ISNULL(InventoryCostAmountNTD,0)) AS Amount,
+            SUM(ISNULL(BookValueAmountNTD,0)) AS BookValue,
+            SUM(ISNULL(ProvisionAmountNTD,0)) AS Provision
+        FROM {FACT}
+        WHERE {' AND '.join(where)}
+        GROUP BY CONVERT(nvarchar(200), ItemNo), CONVERT(nvarchar(40), InventoryUnitCode)
+        HAVING SUM(ISNULL(InventoryQuantity,0)) <> 0
+            OR SUM(ISNULL(InventoryCostAmountNTD,0)) <> 0
+        ORDER BY SUM(ISNULL(InventoryQuantity,0)) DESC, ItemNo;
+        """,
+        params,
+    )
+    # 布種別僅作為顯示欄位，不改變 Top-N 的料號排名粒度。
+    # 正常情況同一料號會落在單一 FabricTypeCode；若來源真的混用，明確標示為「針織/平織」。
+    for row in rows:
+        min_fabric = str(row.get("MinFabricTypeCode") or "").strip()
+        max_fabric = str(row.get("MaxFabricTypeCode") or "").strip()
+        if min_fabric and min_fabric == max_fabric:
+            row["FabricLabel"] = FABRIC_LABELS.get(min_fabric, min_fabric)
+        elif {min_fabric, max_fabric} == {"1", "2"}:
+            row["FabricLabel"] = "針織/平織"
+        else:
+            row["FabricLabel"] = FABRIC_LABELS.get(min_fabric, min_fabric) or FABRIC_LABELS.get(max_fabric, max_fabric)
+
+    return rows, type_code, type_label, age_from, age_to, age_label
+
+
 def _top_source(req: DashboardRequest, period: int, fabric_code: str) -> list[dict[str, Any]]:
+    """Page 5 ranking source: greige only, but use Page 4's age From/To filter."""
     where, params = _dashboard_where(
         req,
         periods=[period],
         force_types=["2"],
         force_fabric=fabric_code,
-        three_years=True,
+        three_years=False,
         apply_structure_filters=False,
     )
+    age_sql, age_params, _, _, _ = _top_age_filter(req.top_age_from, req.top_age_to, req.top_age_subrange)
+    where.append(age_sql)
+    params.extend(age_params)
     return _query(
         f"""
         SELECT
             CONVERT(nvarchar(200), ItemNo) AS ItemNo,
             CONVERT(nvarchar(40), InventoryUnitCode) AS InventoryUnitCode,
+            MIN(AgeDays) AS MinAgeDays,
+            MAX(AgeDays) AS MaxAgeDays,
             SUM(ISNULL(InventoryQuantity,0)) AS Quantity,
             SUM(ISNULL(InventoryCostAmountNTD,0)) AS Amount,
             SUM(ISNULL(BookValueAmountNTD,0)) AS BookValue,
@@ -780,13 +989,18 @@ def _top_source(req: DashboardRequest, period: int, fabric_code: str) -> list[di
     )
 
 
-def _top_table(source: list[dict[str, Any]], top_n: int) -> dict[str, Any]:
+def _top_table(source: list[dict[str, Any]], top_n: int | None) -> dict[str, Any]:
+    """Build one independent Top-N table for a single greige fabric class.
+
+    Page 4 now follows Page 5's split: flat woven and knit are ranked
+    independently, so fabric type no longer needs to be repeated as a column.
+    """
     total_qty = sum(_as_number(r.get("Quantity")) for r in source)
     total_amount = sum(_as_number(r.get("Amount")) for r in source)
     total_book = sum(_as_number(r.get("BookValue")) for r in source)
     total_provision = sum(_as_number(r.get("Provision")) for r in source)
 
-    top = source[:top_n]
+    top = source if top_n is None else source[:top_n]
     output: list[dict[str, Any]] = []
     for index, row in enumerate(top, start=1):
         qty = _as_number(row.get("Quantity"))
@@ -796,6 +1010,7 @@ def _top_table(source: list[dict[str, Any]], top_n: int) -> dict[str, Any]:
         output.append({
             "排行": index,
             "料件編號": row.get("ItemNo") or "",
+            "庫齡": _format_age_span(row.get("MinAgeDays"), row.get("MaxAgeDays")),
             "單位": row.get("InventoryUnitCode") or "",
             "庫存數量": qty,
             "數量百分比": _pct(qty, total_qty),
@@ -814,44 +1029,49 @@ def _top_table(source: list[dict[str, Any]], top_n: int) -> dict[str, Any]:
     other_book = total_book - top_book
     other_provision = total_provision - top_provision
 
-    output.extend([
-        {
-            "排行": f"前{top_n}大數量小計",
-            "料件編號": "",
-            "單位": "",
-            "庫存數量": top_qty,
-            "數量百分比": _pct(top_qty, total_qty),
-            "存貨金額": top_amount,
-            "金額百分比": _pct(top_amount, total_amount),
-            "帳面價值": top_book,
-            "提列率": _provision_rate(top_provision, top_amount),
-        },
-        {
-            "排行": "其他",
-            "料件編號": "",
-            "單位": "",
-            "庫存數量": other_qty,
-            "數量百分比": _pct(other_qty, total_qty),
-            "存貨金額": other_amount,
-            "金額百分比": _pct(other_amount, total_amount),
-            "帳面價值": other_book,
-            "提列率": _provision_rate(other_provision, other_amount),
-        },
-        {
-            "排行": "總計",
-            "料件編號": "",
-            "單位": "",
-            "庫存數量": total_qty,
-            "數量百分比": 100.0 if total_qty else 0.0,
-            "存貨金額": total_amount,
-            "金額百分比": 100.0 if total_amount else 0.0,
-            "帳面價值": total_book,
-            "提列率": _provision_rate(total_provision, total_amount),
-        },
-    ])
+    if top_n is not None:
+        output.extend([
+            {
+                "排行": f"前{top_n}大數量小計",
+                "料件編號": "",
+                "庫齡": "",
+                "單位": "",
+                "庫存數量": top_qty,
+                "數量百分比": _pct(top_qty, total_qty),
+                "存貨金額": top_amount,
+                "金額百分比": _pct(top_amount, total_amount),
+                "帳面價值": top_book,
+                "提列率": _provision_rate(top_provision, top_amount),
+            },
+            {
+                "排行": "其他",
+                "料件編號": "",
+                "庫齡": "",
+                "單位": "",
+                "庫存數量": other_qty,
+                "數量百分比": _pct(other_qty, total_qty),
+                "存貨金額": other_amount,
+                "金額百分比": _pct(other_amount, total_amount),
+                "帳面價值": other_book,
+                "提列率": _provision_rate(other_provision, other_amount),
+            },
+        ])
+
+    output.append({
+        "排行": "總計",
+        "料件編號": "",
+        "庫齡": "",
+        "單位": "",
+        "庫存數量": total_qty,
+        "數量百分比": 100.0 if total_qty else 0.0,
+        "存貨金額": total_amount,
+        "金額百分比": 100.0 if total_amount else 0.0,
+        "帳面價值": total_book,
+        "提列率": _provision_rate(total_provision, total_amount),
+    })
 
     columns = [
-        _column("排行"), _column("料件編號"), _column("單位"),
+        _column("排行"), _column("料件編號"), _column("庫齡"), _column("單位"),
         _column("庫存數量"), _column("數量百分比"),
         _column("存貨金額"), _column("金額百分比"),
         _column("帳面價值"), _column("提列率"),
@@ -861,17 +1081,36 @@ def _top_table(source: list[dict[str, Any]], top_n: int) -> dict[str, Any]:
 
 @router.post("/top-items")
 def top_items(req: DashboardRequest) -> dict[str, Any]:
+    """Page 4: greige Top-N, ranked separately for flat woven and knit.
+
+    This intentionally uses the exact same ranking sources as Page 5 so both
+    pages always select the same Top-N item set under the same filters.
+    """
     period = _latest_period()
-    top_n = max(1, min(int(req.top_n or 20), 100))
+    top_n = None if req.top_n is None else max(1, min(int(req.top_n), 100))
+    _, _, age_from, age_to, age_label = _top_age_filter(
+        req.top_age_from, req.top_age_to, req.top_age_subrange
+    )
+
     flat = _top_table(_top_source(req, period, "2"), top_n)
     knit = _top_table(_top_source(req, period, "1"), top_n)
+
     return {
         "report_period": period,
         "top_n": top_n,
+        "top_n_label": "全部" if top_n is None else str(top_n),
+        "type_code": "2",
+        "type_label": "胚布",
+        "age_from": age_from,
+        "age_to": age_to,
+        "age_label": age_label,
         "flat": flat,
         "knit": knit,
-        # CXCR002_Fact currently has no independently verified field that means
-        # "received greige amount". Do not manufacture an exclusion rule.
+        # Keep the old key so older callers do not fail immediately.
+        # New UI uses flat / knit and does not use items.
+        "items": flat,
+        "category_code": "2",
+        "category_label": "胚布",
         "received_greige_exclusion_applied": False,
     }
 
@@ -880,36 +1119,41 @@ def _responsibility_table(
     req: DashboardRequest,
     period: int,
     fabric_code: str,
-    top_n: int,
+    top_n: int | None,
 ) -> dict[str, Any]:
+    # Ranking grain remains ItemNo within each greige fabric class, but the
+    # exact same age From/To filter used on Page 4 is applied before ranking.
     ranked = _top_source(req, period, fabric_code)
-    top = ranked[:top_n]
+    top = ranked if top_n is None else ranked[:top_n]
     top_items = [str(row.get("ItemNo") or "").strip() for row in top]
     top_items = [item for item in top_items if item]
     rank_map = {item: index for index, item in enumerate(top_items, start=1)}
 
     total_qty = sum(_as_number(r.get("Quantity")) for r in ranked)
     total_amount = sum(_as_number(r.get("Amount")) for r in ranked)
+
+    columns = [
+        _column("排行"), _column("料件編號"), _column("庫齡"), _column("單位"),
+        _column("庫存數量"), _column("數量百分比"),
+        _column("存貨金額"), _column("金額百分比"),
+        _column("帳面價值"), _column("提列率"),
+        _column("類別編號"), _column("品牌商"), _column("歸屬部門"),
+    ]
     if not top_items:
-        return {
-            "columns": [
-                _column("排行"), _column("料件編號"), _column("單位"),
-                _column("庫存數量"), _column("數量百分比"),
-                _column("存貨金額"), _column("金額百分比"),
-                _column("帳面價值"), _column("提列率"),
-                _column("庫齡區間"), _column("品牌商"), _column("歸屬部門"),
-            ],
-            "rows": [],
-        }
+        return {"columns": columns, "rows": []}
 
     where, params = _dashboard_where(
         req,
         periods=[period],
         force_types=["2"],
         force_fabric=fabric_code,
-        three_years=True,
+        three_years=False,
         apply_structure_filters=False,
     )
+    age_sql, age_params, _, _, _ = _top_age_filter(req.top_age_from, req.top_age_to, req.top_age_subrange)
+    where.append(age_sql)
+    params.extend(age_params)
+
     placeholders = ",".join("?" for _ in top_items)
     where.append(f"CONVERT(nvarchar(200), ItemNo) IN ({placeholders})")
     params.extend(top_items)
@@ -922,6 +1166,9 @@ def _responsibility_table(
             CONVERT(nvarchar(40), InventoryUnitCode) AS InventoryUnitCode,
             {age_sort} AS AgeSort,
             {age_name} AS AgeBucket,
+            MIN(AgeDays) AS MinAgeDays,
+            MAX(AgeDays) AS MaxAgeDays,
+            NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), SourceBatchNo))),N'') AS SourceBatchNo,
             NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), BrandOwnerName))),N'') AS BrandOwnerName,
             NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), AttributionDepartmentName))),N'') AS AttributionDepartmentName,
             SUM(ISNULL(InventoryQuantity,0)) AS Quantity,
@@ -934,14 +1181,15 @@ def _responsibility_table(
             CONVERT(nvarchar(200), ItemNo),
             CONVERT(nvarchar(40), InventoryUnitCode),
             {age_sort}, {age_name},
+            NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), SourceBatchNo))),N''),
             NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), BrandOwnerName))),N''),
             NULLIF(LTRIM(RTRIM(CONVERT(nvarchar(200), AttributionDepartmentName))),N'')
-        ORDER BY ItemNo, AgeSort, BrandOwnerName, AttributionDepartmentName;
+        ORDER BY ItemNo, AgeSort, SourceBatchNo, BrandOwnerName, AttributionDepartmentName;
         """,
         params,
     )
 
-    output = []
+    output: list[dict[str, Any]] = []
     for row in source:
         item = str(row.get("ItemNo") or "")
         qty = _as_number(row.get("Quantity"))
@@ -950,6 +1198,7 @@ def _responsibility_table(
         output.append({
             "排行": rank_map.get(item, 999999),
             "料件編號": item,
+            "庫齡": _format_age_span(row.get("MinAgeDays"), row.get("MaxAgeDays")),
             "單位": row.get("InventoryUnitCode") or "",
             "庫存數量": qty,
             "數量百分比": _pct(qty, total_qty),
@@ -957,40 +1206,41 @@ def _responsibility_table(
             "金額百分比": _pct(amount, total_amount),
             "帳面價值": _as_number(row.get("BookValue")),
             "提列率": _provision_rate(provision, amount),
-            "庫齡區間": row.get("AgeBucket") or "",
+            "類別編號": row.get("SourceBatchNo") or "",
             "品牌商": row.get("BrandOwnerName") or "",
             "歸屬部門": row.get("AttributionDepartmentName") or "",
+            "_AgeSort": int(row.get("AgeSort") or 99),
         })
 
     output.sort(
         key=lambda row: (
             int(row.get("排行") or 999999),
-            next(
-                (sort for sort, label, _, _ in AGE_BUCKETS if label == row.get("庫齡區間")),
-                99,
-            ),
+            int(row.get("_AgeSort") or 99),
+            str(row.get("類別編號") or ""),
             str(row.get("品牌商") or ""),
             str(row.get("歸屬部門") or ""),
         )
     )
+    for row in output:
+        row.pop("_AgeSort", None)
 
-    columns = [
-        _column("排行"), _column("料件編號"), _column("單位"),
-        _column("庫存數量"), _column("數量百分比"),
-        _column("存貨金額"), _column("金額百分比"),
-        _column("帳面價值"), _column("提列率"),
-        _column("庫齡區間"), _column("品牌商"), _column("歸屬部門"),
-    ]
     return {"columns": columns, "rows": output}
 
 
 @router.post("/responsibility")
 def responsibility(req: DashboardRequest) -> dict[str, Any]:
     period = _latest_period()
-    top_n = max(1, min(int(req.top_n or 20), 100))
+    top_n = None if req.top_n is None else max(1, min(int(req.top_n), 100))
+    _, _, age_from, age_to, age_label = _top_age_filter(req.top_age_from, req.top_age_to, req.top_age_subrange)
     return {
         "report_period": period,
         "top_n": top_n,
+        "top_n_label": "全部" if top_n is None else str(top_n),
+        "type_code": "2",
+        "type_label": "胚布",
+        "age_from": age_from,
+        "age_to": age_to,
+        "age_label": age_label,
         "flat": _responsibility_table(req, period, "2", top_n),
         "knit": _responsibility_table(req, period, "1", top_n),
     }
@@ -1137,12 +1387,18 @@ def export_dashboard_xlsx(report_name: str, req: DashboardRequest) -> StreamingR
         data = top_items(req)
         period = data.get("report_period")
         top_n = data.get("top_n")
-        note = f"ReportPeriod：{period}；3年以內 Top {top_n}"
+        top_label = data.get("top_n_label") or (str(top_n) if top_n is not None else "全部")
+        age_label = data.get("age_label") or "0～2年"
+        note = (
+            f"ReportPeriod：{period}；類型：胚布；庫齡：{age_label}；Top {top_label}"
+            "；平織／針織各自獨立排名"
+        )
+        export_scope = "全部" if top_n is None else f"前{top_n}大"
         return _dashboard_excel_response(
-            f"3年內胚布前{top_n}大_{period}_{now}.xlsx",
+            f"胚布{export_scope}_平織針織_{age_label}_{period}_{now}.xlsx",
             [
-                ("平織TopN", data["flat"], f"3年以內胚布庫存前 {top_n} 大－平織", note),
-                ("針織TopN", data["knit"], f"3年以內胚布庫存前 {top_n} 大－針織", note),
+                ("平織TopN", data["flat"], f"胚布{export_scope}－平織－{age_label}", note),
+                ("針織TopN", data["knit"], f"胚布{export_scope}－針織－{age_label}", note),
             ],
         )
 
@@ -1150,12 +1406,15 @@ def export_dashboard_xlsx(report_name: str, req: DashboardRequest) -> StreamingR
         data = responsibility(req)
         period = data.get("report_period")
         top_n = data.get("top_n")
-        note = f"ReportPeriod：{period}；3年以內 Top {top_n}"
+        top_label = data.get("top_n_label") or (str(top_n) if top_n is not None else "全部")
+        age_label = data.get("age_label") or "0～2年"
+        note = f"ReportPeriod：{period}；類型：胚布；庫齡：{age_label}；Top {top_label}"
+        export_scope = "全部" if top_n is None else f"前{top_n}大"
         return _dashboard_excel_response(
-            f"前{top_n}大責任歸屬_{period}_{now}.xlsx",
+            f"胚布{export_scope}責任歸屬_{age_label}_{period}_{now}.xlsx",
             [
-                ("平織責任歸屬", data["flat"], f"胚布前 {top_n} 大－平織責任歸屬", note),
-                ("針織責任歸屬", data["knit"], f"胚布前 {top_n} 大－針織責任歸屬", note),
+                ("平織責任歸屬", data["flat"], f"胚布{export_scope}－平織責任歸屬－{age_label}", note),
+                ("針織責任歸屬", data["knit"], f"胚布{export_scope}－針織責任歸屬－{age_label}", note),
             ],
         )
 

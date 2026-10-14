@@ -4,13 +4,99 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>庫存分析與明細查詢</title>
-    <link rel="stylesheet" href="/static/style.css?v=14.2.0">
+    <link rel="stylesheet" href="/static/style.css?v=14.3.0">
+    <style>
+        /* Compact multi-select used by Page 4/5 age bucket filter.
+           The menu floats over the panel so the filter area stays one-row/compact. */
+        .age-multiselect {
+            position: relative;
+            width: 100%;
+        }
+        .age-multiselect-trigger {
+            width: 100%;
+            min-height: 34px;
+            padding: 6px 10px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            background: #fff;
+            color: #0f172a;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            font: inherit;
+            text-align: left;
+            cursor: pointer;
+        }
+        .age-multiselect-trigger:hover { border-color: #94a3b8; }
+        .age-multiselect-trigger:focus {
+            outline: none;
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59,130,246,.12);
+        }
+        .age-multiselect-trigger.open {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59,130,246,.10);
+        }
+        .age-multiselect-text {
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+        .age-multiselect-chevron {
+            color: #64748b;
+            font-size: 11px;
+            transition: transform .15s ease;
+            flex: 0 0 auto;
+        }
+        .age-multiselect-trigger.open .age-multiselect-chevron { transform: rotate(180deg); }
+        .age-multiselect-menu {
+            position: absolute;
+            top: calc(100% + 5px);
+            left: 0;
+            z-index: 60;
+            min-width: 220px;
+            width: max-content;
+            max-width: 300px;
+            padding: 6px;
+            border: 1px solid #dbe3ed;
+            border-radius: 8px;
+            background: #fff;
+            box-shadow: 0 12px 28px rgba(15,23,42,.16);
+        }
+        .age-multiselect-menu.hidden { display: none; }
+        .age-multiselect-option {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            margin: 0;
+            padding: 7px 9px;
+            border-radius: 6px;
+            cursor: pointer;
+            white-space: nowrap;
+            color: #334155;
+            font-weight: 400;
+        }
+        .age-multiselect-option:hover { background: #f1f5f9; }
+        .age-multiselect-option input {
+            width: 15px;
+            height: 15px;
+            margin: 0;
+            accent-color: #2563eb;
+            flex: 0 0 auto;
+        }
+        .age-multiselect-divider {
+            height: 1px;
+            margin: 5px 4px;
+            background: #e2e8f0;
+        }
+    </style>
 </head>
 <body>
 <header class="app-header">
     <div>
         <h1>庫存分析與明細查詢</h1>
-        <p>頁籤 1～5 改用 CXCR002 月結資料；支援庫齡、兩期差異、3年內 Top N 與責任歸屬；頁籤 6 維持 InventoryInquiry 明細</p>
+        <p>頁籤 1～5 改用 CXCR002 月結資料；支援庫齡、兩期差異、胚布平織／針織分開 Top N 與責任歸屬；頁籤 6 維持 InventoryInquiry 明細</p>
     </div>
     <div id="healthBadge" class="badge badge-muted">資料庫檢查中</div>
 </header>
@@ -20,7 +106,7 @@
         <button class="tab active" data-tab="aging">1. 胚紗庫存分析</button>
         <button class="tab" data-tab="category">2. 庫齡結構摘要</button>
         <button class="tab" data-tab="comparison" type="button">3. 兩期存貨差異</button>
-        <button class="tab" data-tab="topn">4. 3年內胚布前 N 大</button>
+        <button class="tab" data-tab="topn">4. 胚布前 N 大</button>
         <button class="tab" data-tab="responsibility">5. 前 N 大責任歸屬</button>
         <button class="tab" data-tab="detail">6. 庫存明細查詢</button>
     </nav>
@@ -70,8 +156,68 @@
                     <option value="20" selected>20</option>
                     <option value="50">50</option>
                     <option value="100">100</option>
+                    <option value="all">全部</option>
                 </select>
             </label>
+
+            <label class="field topn-only">
+                <span>庫齡 From（年）</span>
+                <select id="topAgeFrom">
+                    <option value="0" selected>0</option>
+                    <option value="1">1</option>
+                    <option value="1.5">1.5</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                    <option value="5">5</option>
+                </select>
+            </label>
+
+            <label class="field topn-only">
+                <span>庫齡 To（年）</span>
+                <select id="topAgeTo">
+                    <option value="1">1</option>
+                    <option value="1.5">1.5</option>
+                    <option value="2" selected>2</option>
+                    <option value="3">3</option>
+                    <option value="5">5</option>
+                    <option value="">NULL（以上）</option>
+                </select>
+                <small>可自由組合；例如 0→1、0→2、2→3、3→NULL</small>
+            </label>
+
+            <div class="field topn-only age-subrange-field hidden">
+                <span>一年內區間</span>
+                <div id="topAgeSubrange" class="age-multiselect">
+                    <button id="topAgeSubrangeTrigger" class="age-multiselect-trigger" type="button" aria-haspopup="true" aria-expanded="false">
+                        <span id="topAgeSubrangeText" class="age-multiselect-text">全部（0～365天）</span>
+                        <span class="age-multiselect-chevron">▼</span>
+                    </button>
+                    <div id="topAgeSubrangeMenu" class="age-multiselect-menu hidden">
+                        <label class="age-multiselect-option">
+                            <input type="checkbox" value="all" checked>
+                            <span>全部（0～365天）</span>
+                        </label>
+                        <div class="age-multiselect-divider"></div>
+                        <label class="age-multiselect-option">
+                            <input type="checkbox" value="0_30">
+                            <span>0～30天</span>
+                        </label>
+                        <label class="age-multiselect-option">
+                            <input type="checkbox" value="31_90">
+                            <span>31～90天</span>
+                        </label>
+                        <label class="age-multiselect-option">
+                            <input type="checkbox" value="91_180">
+                            <span>91～180天</span>
+                        </label>
+                        <label class="age-multiselect-option">
+                            <input type="checkbox" value="181_365">
+                            <span>181～365天</span>
+                        </label>
+                    </div>
+                </div>
+                <small>0→1 年時可複選；點選欄位展開</small>
+            </div>
         </div>
 
         <div class="actions">
@@ -121,15 +267,15 @@
     <section id="topn" class="tab-page">
         <div class="panel">
             <div class="panel-title">
-                <h2>3年以內胚布庫存前 N 大：平織</h2>
+                <h2 id="topnFlatTitle">胚布前 N 大：平織</h2>
                 <span id="topnNote" class="summary"></span>
             </div>
             <div id="topnFlatTable" class="table-wrap"></div>
         </div>
         <div class="panel">
             <div class="panel-title">
-                <h2>3年以內胚布庫存前 N 大：針織</h2>
-                <span class="summary">對應 PDF 第 8 頁</span>
+                <h2 id="topnKnitTitle">胚布前 N 大：針織</h2>
+                <span class="summary">平織／針織各自獨立排名</span>
             </div>
             <div id="topnKnitTable" class="table-wrap"></div>
         </div>
@@ -138,14 +284,14 @@
     <section id="responsibility" class="tab-page">
         <div class="panel">
             <div class="panel-title">
-                <h2>胚布前 N 大：平織－責任歸屬與庫齡分析</h2>
+                <h2 id="responsibilityFlatTitle">胚布前 N 大：平織－責任歸屬與庫齡分析</h2>
                 <span id="responsibilityNote" class="summary"></span>
             </div>
             <div id="responsibilityFlatTable" class="table-wrap analysis-wide"></div>
         </div>
         <div class="panel">
             <div class="panel-title">
-                <h2>胚布前 N 大：針織－責任歸屬與庫齡分析</h2>
+                <h2 id="responsibilityKnitTitle">胚布前 N 大：針織－責任歸屬與庫齡分析</h2>
                 <span class="summary">對應 PDF 第 9～10 頁</span>
             </div>
             <div id="responsibilityKnitTable" class="table-wrap analysis-wide"></div>
@@ -321,6 +467,6 @@
     <div id="errorBox" class="error hidden"></div>
 </main>
 
-<script src="/static/app.js?v=14.2.0"></script>
+<script src="/static/app.js?v=14.3.0"></script>
 </body>
 </html>
